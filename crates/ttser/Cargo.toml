@@ -1,0 +1,19 @@
+[package]
+name = "ttser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Local push-to-talk dictation"
+
+[features]
+default = ["vulkan"]
+vulkan = ["ttser-linux/vulkan"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ttser-core = { path = "../ttser-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ttser-linux = { path = "../ttser-linux" }

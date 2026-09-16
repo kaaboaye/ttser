@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/ttser", "crates/ttser-core", "crates/ttser-linux"]
+default-members = ["crates/ttser"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1"
+arboard = "3.6.1"
+clap = { version = "4.6", features = ["derive"] }
+cpal = "0.16"
+ctrlc = { version = "3.5", features = ["termination"] }
+fs2 = "0.4"
+hound = "3.5"
+rubato = "0.16.2"
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+whisper-rs = "0.16.0"
+x11rb = { version = "0.13", features = ["xtest"] }
+
+tempfile = "3"
+
+[profile.release]
+lto = "thin"

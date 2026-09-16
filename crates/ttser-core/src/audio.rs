@@ -1,0 +1,298 @@
+use anyhow::{Context, Result, bail, ensure};
+use cpal::{
+    FromSample, SampleFormat, SizedSample, Stream, StreamConfig,
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+};
+use rubato::{FftFixedInOut, Resampler};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+pub fn list_devices() -> Result<()> {
+    let host = cpal::default_host();
+    let default = host.default_input_device().and_then(|d| d.name().ok());
+    for device in host.input_devices()? {
+        let name = device.name()?;
+        println!(
+            "{name}{}",
+            if Some(&name) == default.as_ref() {
+                " (default)"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct Capture {
+    samples: Vec<f32>,
+    error: Option<String>,
+}
+
+pub struct Recording {
+    stream: Stream,
+    data: Arc<Mutex<Capture>>,
+    rate: u32,
+}
+
+impl Recording {
+    pub fn start(device_name: Option<&str>, max_seconds: u32) -> Result<Self> {
+        let host = cpal::default_host();
+        let device = if let Some(name) = device_name {
+            host.input_devices()?
+                .find(|d| d.name().is_ok_and(|n| n == name))
+                .with_context(|| format!("Input device not found: {name}"))?
+        } else {
+            host.default_input_device()
+                .context("No default microphone")?
+        };
+        let supported = device
+            .default_input_config()
+            .context("Reading microphone format")?;
+        let config: StreamConfig = supported.clone().into();
+        let data = Arc::new(Mutex::new(Capture::default()));
+        let limit = config.sample_rate.0 as usize * max_seconds as usize;
+        let stream = match supported.sample_format() {
+            SampleFormat::I8 => input::<i8>(&device, &config, &data, limit)?,
+            SampleFormat::I16 => input::<i16>(&device, &config, &data, limit)?,
+            SampleFormat::I32 => input::<i32>(&device, &config, &data, limit)?,
+            SampleFormat::I64 => input::<i64>(&device, &config, &data, limit)?,
+            SampleFormat::U8 => input::<u8>(&device, &config, &data, limit)?,
+            SampleFormat::U16 => input::<u16>(&device, &config, &data, limit)?,
+            SampleFormat::U32 => input::<u32>(&device, &config, &data, limit)?,
+            SampleFormat::U64 => input::<u64>(&device, &config, &data, limit)?,
+            SampleFormat::F32 => input::<f32>(&device, &config, &data, limit)?,
+            SampleFormat::F64 => input::<f64>(&device, &config, &data, limit)?,
+            format => bail!("Unsupported microphone format: {format}"),
+        };
+        stream.play().context("Starting microphone")?;
+        Ok(Self {
+            stream,
+            data,
+            rate: config.sample_rate.0,
+        })
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.data.lock().unwrap().error.clone()
+    }
+
+    pub fn finish(self) -> Result<Vec<f32>> {
+        drop(self.stream);
+        let mut data = self.data.lock().unwrap();
+        if let Some(error) = &data.error {
+            bail!("{error}");
+        }
+        let samples = std::mem::take(&mut data.samples);
+        drop(data);
+        resample(&samples, self.rate)
+    }
+}
+
+fn input<T>(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    data: &Arc<Mutex<Capture>>,
+    limit: usize,
+) -> Result<Stream>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let capture = Arc::clone(data);
+    let errors = Arc::clone(data);
+    let channels = config.channels as usize;
+    Ok(device.build_input_stream(
+        config,
+        move |frames: &[T], _| {
+            let mut data = capture.lock().unwrap();
+            if data.error.is_some() {
+                return;
+            }
+            for frame in frames.chunks_exact(channels) {
+                if data.samples.len() >= limit {
+                    data.error = Some("Recording limit reached; audio discarded".into());
+                    break;
+                }
+                data.samples.push(
+                    frame.iter().map(|&s| s.to_sample::<f32>()).sum::<f32>() / channels as f32,
+                );
+            }
+        },
+        move |error| {
+            errors.lock().unwrap().error = Some(format!("Microphone error: {error}"));
+        },
+        None,
+    )?)
+}
+
+pub fn resample(samples: &[f32], rate: u32) -> Result<Vec<f32>> {
+    ensure!(rate > 0, "Invalid audio sample rate");
+    if samples.is_empty() || rate == 16_000 {
+        return Ok(samples.to_vec());
+    }
+    let mut resampler = FftFixedInOut::<f32>::new(rate as usize, 16_000, 1024, 1)?;
+    let delay = resampler.output_delay();
+    let length = (samples.len() as u64 * 16_000 / rate as u64) as usize;
+    let mut result = Vec::with_capacity(length + delay + 2048);
+    let mut offset = 0;
+    while result.len() < length + delay {
+        let size = resampler.input_frames_next();
+        let mut block = vec![0.0; size];
+        let count = size.min(samples.len().saturating_sub(offset));
+        block[..count].copy_from_slice(&samples[offset..offset + count]);
+        offset += count;
+        result.extend_from_slice(&resampler.process(&[block], None)?[0]);
+    }
+    Ok(result[delay..delay + length].to_vec())
+}
+
+pub fn read_wav(path: &Path) -> Result<Vec<f32>> {
+    let mut reader = hound::WavReader::open(path).context("Opening WAV")?;
+    let spec = reader.spec();
+    ensure!(spec.channels > 0, "WAV has no channels");
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
+        hound::SampleFormat::Int => {
+            let scale = 2f32.powi(spec.bits_per_sample as i32 - 1);
+            reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 / scale))
+                .collect::<Result<_, _>>()?
+        }
+    };
+    let mono: Vec<f32> = samples
+        .chunks_exact(spec.channels as usize)
+        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+        .collect();
+    resample(&mono, spec.sample_rate)
+}
+
+#[derive(Clone, Copy)]
+pub enum Cue {
+    Start,
+    Stop,
+    Busy,
+    Error,
+}
+
+pub struct Sounds {
+    _stream: Stream,
+    queue: Arc<Mutex<VecDeque<f32>>>,
+    rate: u32,
+}
+
+impl Sounds {
+    pub fn new() -> Result<Self> {
+        let device = cpal::default_host()
+            .default_output_device()
+            .context("No audio output for feedback")?;
+        let supported = device.default_output_config()?;
+        let config: StreamConfig = supported.clone().into();
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let stream = match supported.sample_format() {
+            SampleFormat::F32 => output::<f32>(&device, &config, &queue)?,
+            SampleFormat::F64 => output::<f64>(&device, &config, &queue)?,
+            SampleFormat::I16 => output::<i16>(&device, &config, &queue)?,
+            SampleFormat::I32 => output::<i32>(&device, &config, &queue)?,
+            SampleFormat::U16 => output::<u16>(&device, &config, &queue)?,
+            format => bail!("Unsupported output format: {format}"),
+        };
+        stream.play()?;
+        Ok(Self {
+            _stream: stream,
+            queue,
+            rate: config.sample_rate.0,
+        })
+    }
+
+    pub fn play(&self, cue: Cue) {
+        let hz = match cue {
+            Cue::Start => 880.,
+            Cue::Stop => 440.,
+            Cue::Busy => 220.,
+            Cue::Error => 140.,
+        };
+        let count = (self.rate as f32 * 0.09) as usize;
+        let mut queue = self.queue.lock().unwrap();
+        // Key repeat must not accumulate seconds of feedback sounds.
+        queue.clear();
+        for i in 0..count {
+            let envelope = ((i.min(count - 1 - i) as f32) / (self.rate as f32 * 0.008)).min(1.0);
+            queue.push_back(
+                0.15 * envelope * (std::f32::consts::TAU * hz * i as f32 / self.rate as f32).sin(),
+            );
+        }
+    }
+}
+
+fn output<T>(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    queue: &Arc<Mutex<VecDeque<f32>>>,
+) -> Result<Stream>
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let queue = Arc::clone(queue);
+    let channels = config.channels as usize;
+    Ok(device.build_output_stream(
+        config,
+        move |data: &mut [T], _| {
+            let mut queue = queue.lock().unwrap();
+            for frame in data.chunks_exact_mut(channels) {
+                frame.fill(T::from_sample(queue.pop_front().unwrap_or(0.0)));
+            }
+        },
+        |error| eprintln!("Audio output error: {error}"),
+        None,
+    )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resampling_preserves_duration_and_speech_band() {
+        for rate in [44_100, 48_000] {
+            let input: Vec<f32> = (0..rate)
+                .map(|i| (std::f32::consts::TAU * 1000. * i as f32 / rate as f32).sin())
+                .collect();
+            let output = resample(&input, rate).unwrap();
+            assert_eq!(output.len(), 16_000);
+            // Non-integral ratios can leave fractional-sample phase delay.
+            // Check frequency and energy independently of that phase.
+            let steady = &output[100..15900];
+            let power = steady.iter().map(|x| x * x).sum::<f32>() / steady.len() as f32;
+            assert!((power - 0.5).abs() < 0.005, "rate={rate}, power={power}");
+            let crossings = steady
+                .windows(2)
+                .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+                .count();
+            assert!((crossings as i32 - 987).abs() <= 2);
+        }
+    }
+
+    #[test]
+    fn resampling_handles_empty_short_and_native_audio() {
+        assert!(resample(&[], 48_000).unwrap().is_empty());
+        assert_eq!(resample(&[0.1, 0.2], 16_000).unwrap(), [0.1, 0.2]);
+        assert_eq!(resample(&[0.1; 30], 48_000).unwrap().len(), 10);
+        assert!(resample(&[0.1], 0).is_err());
+    }
+
+    #[test]
+    fn resampling_filters_frequencies_above_output_nyquist() {
+        let input: Vec<f32> = (0..48_000)
+            .map(|i| (std::f32::consts::TAU * 10_000. * i as f32 / 48_000.).sin())
+            .collect();
+        let output = resample(&input, 48_000).unwrap();
+        let power = output[100..15900].iter().map(|x| x * x).sum::<f32>() / 15800.;
+        assert!(power < 0.001, "Aliased out-of-band signal: {power}");
+    }
+}

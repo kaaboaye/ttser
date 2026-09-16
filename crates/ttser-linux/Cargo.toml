@@ -1,0 +1,22 @@
+[package]
+name = "ttser-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Linux/X11 desktop integration and daemon for ttser"
+
+[features]
+default = []
+vulkan = ["ttser-core/vulkan"]
+
+[dependencies]
+anyhow.workspace = true
+arboard.workspace = true
+ctrlc.workspace = true
+fs2.workspace = true
+x11rb.workspace = true
+ttser-core = { path = "../ttser-core" }
+
+[dev-dependencies]
+tempfile.workspace = true

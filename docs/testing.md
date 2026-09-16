@@ -1,0 +1,87 @@
+# Development and testing
+
+Run the following commands from the repository root.
+
+## Rust checks
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
+
+Core tests do not require a model, microphone or display. Desktop integration
+requires a live X11 session. The `insert_text` example reads UTF-8 text from stdin
+until EOF, inserts it into the focused field, and keeps the restored clipboard
+alive until the helper is terminated. Use a disposable field and never run it
+with a shell prompt focused.
+
+## Model regression test without desktop interaction
+
+This opt-in test uses the public `samples/jfk.wav` from whisper.cpp. It checks
+English recognition with Polish/English detection, repeated inference using
+one loaded model, and exact audio/text history round trips. It does not access
+the microphone or clipboard, or download any files.
+
+```sh
+TTSER_TEST_MODEL=/path/to/ggml-large-v3-turbo.bin TTSER_TEST_WAV=/path/to/jfk.wav \
+  cargo test -p ttser-core --features vulkan real_speech_preserves_english_and_history_across_recordings -- --ignored
+```
+
+## Live X11 integration tests
+
+These opt-in tests temporarily focus isolated windows and use both selections.
+Run them on an idle Linux/X11 desktop. They save and restore the previous focus,
+mouse position and text selections. The terminal runs a raw Python receiver,
+never a shell. Chromium uses a disposable profile and a local test page.
+To avoid losing clipboard representations, the harness refuses to start when
+the current clipboard contains non-text formats.
+
+Dependencies: Python 3 (standard library only), `xfce4-terminal`, `xdotool`,
+`xclip`, `xmodmap`. The browser test additionally needs matching `chromium` and
+`chromedriver`; dictation needs `pactl`, `paplay` and a PulseAudio-compatible
+server (including PipeWire).
+
+### Paste correctness and clipboard restoration
+
+```sh
+cargo build -p ttser-linux --example insert_text --locked
+python3 tests/desktop/paste.py
+```
+
+Checks ASCII/symbols, Polish accents, emoji, repeated characters, and a 695-character
+transcript in xfce4-terminal and Chromium. Browser cases insert between existing
+characters; contenteditable is tested too. Terminal cases verify bracketed-paste
+boundaries. Every case checks restoration of both selections. A concurrent-copy
+case verifies that restoration preserves newer clipboard data. Text is inserted
+only by the production Rust backend; WebDriver only prepares/reads the field.
+The harness sends the text directly to the Rust helper through a stdin pipe;
+there is no intermediate payload file. The helper stays alive after EOF to
+serve the restored selections until the harness terminates it.
+
+### Entire dictation path
+
+Provide a WAV of known speech and an existing Whisper GGML model:
+
+```sh
+cargo build --release --locked
+python3 tests/desktop/dictation.py --wav /path/to/jfk.wav
+python3 tests/desktop/dictation.py --wav /path/to/jfk.wav --languages pl en
+```
+
+The default assertion matches `samples/jfk.wav` from
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp/blob/master/samples/jfk.wav).
+For another recording use `--contains "expected words"`. `--model PATH` overrides
+the default model location. Tests never download models or recordings.
+The second invocation also tests restricted language detection, ensuring an
+English recording remains English when Polish is another allowed language.
+
+A temporary null sink feeds the recording through the actual CPAL input path.
+The test uses a separate YAML config/socket, exercises start/stop, key repeat,
+busy state, Whisper, actual terminal insertion and shutdown. It unloads its
+temporary audio module afterwards and never changes the system default devices.
+
+Each run writes logs and `report.json` to a unique directory under
+`target/desktop-tests/` and exits nonzero on failure. These tests are not part of
+headless CI. Pure configuration, resampling, trigger-state and IPC tests run with
+`cargo test --workspace --all-features`.

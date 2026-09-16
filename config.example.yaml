@@ -1,0 +1,17 @@
+# CLI flags override this file. Unspecified values use built-in defaults.
+model: ~/.local/share/whisper/ggml-large-v3-turbo.bin
+# One entry fixes the language; multiple restrict detection; [] permits all.
+languages: [pl, en]
+# Optional vocabulary/text context; instructions can bias the transcript.
+prompt: ""
+# Set a directory to retain audio and results locally, e.g. ~/.local/state/ttser/history.
+history_dir: null
+threads: 4
+cpu: false
+# Exact name from `ttser devices`; null uses the system default.
+input_device: null
+max_seconds: 300
+# null uses $XDG_RUNTIME_DIR/ttser/control.sock.
+socket: null
+# Time allowed for the destination to retrieve the clipboard before restoration.
+paste_delay_ms: 300

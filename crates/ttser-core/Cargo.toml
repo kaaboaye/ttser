@@ -1,0 +1,23 @@
+[package]
+name = "ttser-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Configuration, audio capture and local speech recognition for ttser"
+
+[features]
+default = []
+vulkan = ["whisper-rs/vulkan"]
+
+[dependencies]
+anyhow.workspace = true
+cpal.workspace = true
+hound.workspace = true
+rubato.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+whisper-rs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
