@@ -32,13 +32,17 @@ history_dir: null
 threads: 4
 cpu: false
 input_device: null
+audio_target_peak: 0.25
+audio_max_gain: 10.0
 max_seconds: 300
 socket: null
 paste_delay_ms: 300
 ```
 
 Settings resolve as **defaults → YAML → explicit CLI flags**. Unknown YAML keys
-and invalid values are errors. `prompt: ""` disables the initial prompt. Relative
+produce a warning with the field name and are ignored; their values are not
+retained in history. Invalid values of known fields and malformed YAML remain
+errors. `prompt: ""` disables the initial prompt. Relative
 `model`, `socket` and `history_dir` paths in YAML resolve relative to that file;
 `~/` is expanded.
 CLI paths resolve relative to the working directory. Model files are supplied by
@@ -64,16 +68,37 @@ previous Polish instruction prompt distorted an English test recording even
 with `languages: [en]` and translation disabled.
 Restart `serve` after editing the configuration.
 
+## Audio level
+
+Before language detection and transcription, the program measures the peak
+absolute amplitude and applies one constant multiplier to the entire recording:
+`gain = min(audio_target_peak / peak, audio_max_gain)`. The defaults target 0.25
+(-12 dBFS) and cap amplification at 10x (+20 dB). Louder input is attenuated to
+the target; quiet input may remain below it when the gain cap is reached.
+Zero and near-zero signals are left unchanged. Processing stays in memory and
+applies to both live dictation and `transcribe`.
+
+These settings follow a [local comparison](audio-levels.md), not a proven optimum for all speech. Peak
+normalization also amplifies background noise and a loud click can limit the
+gain for a whole recording. It is not noise removal or speech detection.
+See the [FFmpeg normalization discussion](https://ffmpeg.org/ffmpeg-filters.html#dynaudnorm)
+for the distinction between peak amplitude and perceived loudness.
+
 ## Local history
 
 Set `history_dir: ~/.local/state/ttser/history` to retain recordings submitted
 to transcription by `serve`. History is disabled by default. Each recording
 gets a unique subdirectory containing:
 
-- `audio.wav`: the exact mono 16 kHz float samples passed to Whisper.
+- `audio.wav`: original mono 16 kHz float samples, before volume normalization.
 - `record.yaml`: raw output, cleaned text, selected language, language detection
   probabilities when available, settings, timestamp, processing time, outcome
   and any transcription/insertion error.
+
+`transcript.audio` records the original peak, applied gain, and resulting peak.
+Multiplying the saved samples by that gain reconstructs the buffer passed to
+Whisper. It is null when input is skipped without inference. Record schema
+version 2 includes normalization; original recordings remain unchanged.
 
 The recognizer still receives its audio directly from memory. History is a
 separate local copy; it is never uploaded and has no automatic retention limit.

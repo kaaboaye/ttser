@@ -2,6 +2,11 @@
 
 Run the following commands from the repository root.
 
+Development artifacts belong in gitignored `target/` directories or `/tmp`.
+The application's runtime state directory is reserved for real use. Experiments
+may read existing recordings but must not add reports or annotations to that
+directory or its history entries. Keep private transcripts out of version control.
+
 ## Rust checks
 
 ```sh
@@ -19,13 +24,79 @@ with a shell prompt focused.
 ## Model regression test without desktop interaction
 
 This opt-in test uses the public `samples/jfk.wav` from whisper.cpp. It checks
-English recognition with Polish/English detection, repeated inference using
-one loaded model, and exact audio/text history round trips. It does not access
+English recognition with Polish/English detection at original and reduced
+volume, repeated inference using one loaded model, and original audio/text/gain
+history round trips. It does not access
 the microphone or clipboard, or download any files.
 
 ```sh
 TTSER_TEST_MODEL=/path/to/ggml-large-v3-turbo.bin TTSER_TEST_WAV=/path/to/jfk.wav \
   cargo test -p ttser-core --features vulkan real_speech_preserves_english_and_history_across_recordings -- --ignored
+```
+
+## Audio level comparison
+
+Requires Python 3 with PyYAML and a release binary. This reads existing local
+history without changing it, uses the real recognizer, and does not access the
+microphone or clipboard. Write private reports under `target/benchmarks/` or
+`/tmp`. The output directory must not already exist.
+
+```sh
+cargo build --release --locked
+python3 tests/compare_audio_levels.py \
+  --history "$HOME/.local/state/ttser/history" \
+  --output target/benchmarks/peak-comparison \
+  --references /path/to/corrected-references.json
+```
+
+The optional references file is a JSON object mapping recording directory names
+to corrected text. Without a corrected reference, historical output is used as
+a provisional reference, not ground truth. Use `--recordings ID ...` to restrict
+the comparison to particular recordings. The script tests original audio and peaks 0.1, 0.25, 0.5, 0.85,
+0.95. Use `--peaks` and `--max-gain` to vary them. The experimental default cap
+is 100x to reach the requested levels; production defaults to 10x.
+
+`report.json` records actual output, reference origin, gain, peaks, binary hash
+and word edit distance. Read the variants as well: punctuation and case are
+ignored by the metric, and a word-order change need not be a language error.
+See [the initial findings](audio-levels.md) for the limitations of this comparison.
+
+## OpenRouter comparison on selected recordings
+
+`tests/compare_openrouter.py` makes paid requests and uploads only explicitly
+listed recordings to OpenRouter and the selected model providers. It is an
+opt-in experiment, separate from the local application's speech engine and CI.
+Requires Python 3 and PyYAML. The supplied YAML must contain
+`openrouter_api_key`; the script never copies that configuration into its report.
+
+```sh
+python3 tests/compare_openrouter.py \
+  --config "$HOME/.config/ttser/config.yaml" \
+  --history "$HOME/.local/state/ttser/history" \
+  --recordings RECORDING_ID ANOTHER_RECORDING_ID \
+  --references /path/to/corrected-references.json \
+  --output target/benchmarks/openrouter-comparison
+```
+
+References map IDs to text or lists of acceptable texts. They are used only for
+local scoring and are never sent to models. The experiment calls
+`microsoft/mai-transcribe-2`, `openai/gpt-transcribe`, and `google/chirp-3` using
+the [STT endpoint](https://openrouter.ai/docs/guides/overview/multimodal/stt).
+Each model receives original and peak-0.25 audio, with automatic language and
+explicit Polish: twelve requests per recording. Audio is converted in memory
+to mono 16 kHz PCM16 WAV for all providers; the gain cap is 10x.
+
+The private JSON and Markdown reports include actual output, request language,
+source/payload hashes, gain, network-inclusive elapsed time, and API-reported
+usage/cost. Errors are recorded without their response bodies. The script does
+not automatically retry requests, and stops on authentication/billing refusals.
+Single requests per condition do not establish repeatability or a latency SLA.
+Raw word distance still needs human interpretation, particularly for fillers.
+
+Offline harness tests make no API calls:
+
+```sh
+python3 -m unittest discover -s tests -p test_audio_benchmarks.py
 ```
 
 ## Live X11 integration tests

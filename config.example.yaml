@@ -10,6 +10,9 @@ threads: 4
 cpu: false
 # Exact name from `ttser devices`; null uses the system default.
 input_device: null
+# Peak amplitude in the 0..1 range; gain is a linear multiplier, not decibels.
+audio_target_peak: 0.25
+audio_max_gain: 10.0
 max_seconds: 300
 # null uses $XDG_RUNTIME_DIR/ttser/control.sock.
 socket: null

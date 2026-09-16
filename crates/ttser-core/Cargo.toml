@@ -16,6 +16,7 @@ cpal.workspace = true
 hound.workspace = true
 rubato.workspace = true
 serde.workspace = true
+serde_ignored.workspace = true
 serde_yaml_ng.workspace = true
 whisper-rs.workspace = true
 

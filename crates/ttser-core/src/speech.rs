@@ -5,7 +5,10 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
-use crate::config::Config;
+use crate::{
+    audio::{AudioLevels, normalize_volume},
+    config::Config,
+};
 
 #[derive(Debug, Default, Serialize)]
 pub struct Transcript {
@@ -13,6 +16,7 @@ pub struct Transcript {
     pub raw_text: String,
     pub language: Option<String>,
     pub language_probabilities: BTreeMap<String, f32>,
+    pub audio: Option<AudioLevels>,
 }
 
 pub struct Engine {
@@ -20,6 +24,8 @@ pub struct Engine {
     languages: Vec<String>,
     threads: i32,
     prompt: String,
+    audio_target_peak: f32,
+    audio_max_gain: f32,
 }
 
 impl Engine {
@@ -44,6 +50,8 @@ impl Engine {
             languages: options.languages.clone(),
             threads: options.threads as i32,
             prompt: options.prompt.clone(),
+            audio_target_peak: options.audio_target_peak,
+            audio_max_gain: options.audio_max_gain,
         })
     }
 
@@ -52,6 +60,9 @@ impl Engine {
         if samples.len() < 4_000 || samples.iter().all(|s| s.abs() < 0.00001) {
             return Ok(Transcript::default());
         }
+        let (normalized, levels) =
+            normalize_volume(samples, self.audio_target_peak, self.audio_max_gain)?;
+        let samples = normalized.as_ref();
         let mut language_probabilities = BTreeMap::new();
         let language = match self.languages.as_slice() {
             [] => None,
@@ -95,6 +106,7 @@ impl Engine {
             language: whisper_rs::get_lang_str(self.state.full_lang_id_from_state())
                 .map(str::to_owned),
             language_probabilities,
+            audio: Some(levels),
         })
     }
 }

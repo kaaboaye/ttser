@@ -78,7 +78,7 @@ impl Entry {
         processing_ms: u64,
     ) -> Result<()> {
         let record = Record {
-            version: 1,
+            version: 2,
             program_version: env!("CARGO_PKG_VERSION"),
             created_at_unix_ms: self.created_at_unix_ms,
             sample_rate: 16_000,
@@ -136,7 +136,8 @@ mod tests {
         let wav = PathBuf::from(std::env::var_os("TTSER_TEST_WAV").expect("Set TTSER_TEST_WAV"));
         let samples = crate::audio::read_wav(&wav).unwrap();
         let mut engine = crate::speech::Engine::new(&config).unwrap();
-        for _ in 0..2 {
+        for attenuation in [1.0, 0.05] {
+            let samples: Vec<f32> = samples.iter().map(|sample| sample * attenuation).collect();
             let entry = Entry::start(&config, &samples).unwrap().unwrap();
             let transcript = engine.transcribe(&samples).unwrap();
             assert_eq!(transcript.language.as_deref(), Some("en"));
@@ -158,6 +159,14 @@ mod tests {
             .unwrap();
             assert_eq!(record["transcript"]["text"], transcript.text);
             assert_eq!(record["transcript"]["raw_text"], transcript.raw_text);
+            let levels = transcript.audio.as_ref().unwrap();
+            assert_eq!(
+                record["transcript"]["audio"]["gain"].as_f64().unwrap() as f32,
+                levels.gain
+            );
+            if attenuation < 1.0 {
+                assert!(levels.gain > 1.0 && levels.gain <= config.audio_max_gain);
+            }
             assert_eq!(
                 crate::audio::read_wav(&entry.directory.join("audio.wav")).unwrap(),
                 samples

@@ -5,10 +5,49 @@ use cpal::{
 };
 use rubato::{FftFixedInOut, Resampler};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     path::Path,
     sync::{Arc, Mutex},
 };
+
+#[derive(Debug, serde::Serialize)]
+pub struct AudioLevels {
+    pub input_peak: f32,
+    pub gain: f32,
+    pub output_peak: f32,
+}
+
+pub(crate) fn normalize_volume(
+    samples: &[f32],
+    target_peak: f32,
+    max_gain: f32,
+) -> Result<(Cow<'_, [f32]>, AudioLevels)> {
+    let mut input_peak = 0.0_f32;
+    for &sample in samples {
+        ensure!(sample.is_finite(), "Audio contains a non-finite sample");
+        input_peak = input_peak.max(sample.abs());
+    }
+    // A finite cap avoids amplifying near-silence to full scale.
+    let gain = if input_peak < 0.00001 {
+        1.0
+    } else {
+        (target_peak / input_peak).min(max_gain)
+    };
+    let output = if gain == 1.0 {
+        Cow::Borrowed(samples)
+    } else {
+        Cow::Owned(samples.iter().map(|sample| sample * gain).collect())
+    };
+    Ok((
+        output,
+        AudioLevels {
+            input_peak,
+            gain,
+            output_peak: input_peak * gain,
+        },
+    ))
+}
 
 pub fn list_devices() -> Result<()> {
     let host = cpal::default_host();
@@ -256,6 +295,39 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_normalization_preserves_shape_and_original_samples() {
+        let original = [-0.1, 0.0, 0.025, 0.05];
+        let (output, levels) = normalize_volume(&original, 0.5, 10.0).unwrap();
+        assert_eq!(output.as_ref(), [-0.5, 0.0, 0.125, 0.25]);
+        assert_eq!(original, [-0.1, 0.0, 0.025, 0.05]);
+        assert_eq!(levels.gain, 5.0);
+        assert_eq!(levels.input_peak, 0.1);
+        assert_eq!(levels.output_peak, 0.5);
+    }
+
+    #[test]
+    fn volume_normalization_limits_gain_and_handles_loud_audio() {
+        let (quiet, levels) = normalize_volume(&[0.001, -0.002], 0.5, 10.0).unwrap();
+        assert_eq!(levels.gain, 10.0);
+        assert!((quiet[1] + 0.02).abs() < 1e-7);
+        let (loud, levels) = normalize_volume(&[-1.0, 0.5], 0.5, 10.0).unwrap();
+        assert_eq!(loud.as_ref(), [-0.5, 0.25]);
+        assert_eq!(levels.gain, 0.5);
+    }
+
+    #[test]
+    fn volume_normalization_preserves_silence_and_rejects_invalid_audio() {
+        for samples in [&[][..], &[0.0, 0.0], &[0.000001, -0.000001]] {
+            let (output, levels) = normalize_volume(samples, 0.5, 10.0).unwrap();
+            assert_eq!(output.as_ref(), samples);
+            assert_eq!(levels.gain, 1.0);
+        }
+        for sample in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(normalize_volume(&[sample], 0.5, 10.0).is_err());
+        }
+    }
 
     #[test]
     fn resampling_preserves_duration_and_speech_band() {

@@ -6,7 +6,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub model: Option<PathBuf>,
     pub languages: Vec<String>,
@@ -15,6 +15,8 @@ pub struct Config {
     pub threads: u32,
     pub cpu: bool,
     pub input_device: Option<String>,
+    pub audio_target_peak: f32,
+    pub audio_max_gain: f32,
     pub max_seconds: u32,
     pub socket: Option<PathBuf>,
     pub paste_delay_ms: u64,
@@ -30,6 +32,8 @@ impl Default for Config {
             threads: 4,
             cpu: false,
             input_device: None,
+            audio_target_peak: 0.25,
+            audio_max_gain: 10.0,
             max_seconds: 300,
             socket: None,
             paste_delay_ms: 300,
@@ -55,8 +59,13 @@ impl Config {
     fn from_file(path: &Path) -> Result<Self> {
         let yaml = fs::read_to_string(path)
             .with_context(|| format!("Reading config {}", path.display()))?;
-        let mut config: Self = serde_yaml_ng::from_str(&yaml)
-            .with_context(|| format!("Parsing config {}", path.display()))?;
+        let mut config = Self::from_yaml(&yaml, |field| {
+            eprintln!(
+                "Warning: ignoring unknown config field {field:?} in {}",
+                path.display()
+            );
+        })
+        .with_context(|| format!("Parsing config {}", path.display()))?;
         for value in [
             &mut config.model,
             &mut config.socket,
@@ -73,7 +82,25 @@ impl Config {
         Ok(config)
     }
 
+    fn from_yaml(yaml: &str, mut warn: impl FnMut(String)) -> Result<Self> {
+        // Discard unknown values instead of retaining possible secrets in history.
+        Ok(serde_ignored::deserialize(
+            serde_yaml_ng::Deserializer::from_str(yaml),
+            |path| warn(path.to_string()),
+        )?)
+    }
+
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.audio_target_peak.is_finite()
+                && self.audio_target_peak > 0.0
+                && self.audio_target_peak <= 1.0,
+            "audio_target_peak must be greater than 0 and at most 1"
+        );
+        ensure!(
+            self.audio_max_gain.is_finite() && self.audio_max_gain >= 1.0,
+            "audio_max_gain must be finite and at least 1"
+        );
         ensure!(
             (1..=256).contains(&self.threads),
             "threads must be between 1 and 256"
@@ -141,13 +168,42 @@ mod tests {
     }
 
     #[test]
-    fn typos_missing_files_and_invalid_values_are_errors() {
-        assert!(serde_yaml_ng::from_str::<Config>("promt: hello").is_err());
+    fn unknown_fields_warn_without_retaining_their_values() {
+        let yaml = "threads: 8\nprompt: vocabulary\nunknown_test_field: secret-for-test\nextra: {nested: [1, 2]}\n";
+        let mut warnings = Vec::new();
+        let config = Config::from_yaml(yaml, |field| warnings.push(field)).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.threads, 8);
+        assert_eq!(config.prompt, "vocabulary");
+        assert_eq!(warnings, ["unknown_test_field", "extra"]);
+        for output in [
+            serde_yaml_ng::to_string(&config).unwrap(),
+            format!("{config:?}"),
+        ] {
+            assert!(!output.contains("secret-for-test"));
+            assert!(!output.contains("unknown_test_field"));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        fs::write(&path, yaml).unwrap();
+        assert_eq!(Config::load(Some(&path)).unwrap().threads, 8);
+    }
+
+    #[test]
+    fn missing_files_and_invalid_known_values_are_errors() {
         assert!(Config::load(Some(Path::new("/nonexistent/ttser.yaml"))).is_err());
+        assert!(Config::from_yaml("threads: wrong-type", |_| {}).is_err());
+        assert!(Config::from_yaml("languages: [", |_| {}).is_err());
+        assert!(Config::from_yaml("threads: 4\nthreads: 8", |_| {}).is_err());
         for yaml in [
             "threads: 0",
             "max_seconds: 0",
             "paste_delay_ms: 0",
+            "audio_target_peak: 0",
+            "audio_target_peak: 1.1",
+            "audio_target_peak: .nan",
+            "audio_max_gain: 0.5",
+            "audio_max_gain: .inf",
             "languages: [pl, not-a-language]",
             "languages: [auto]",
             "languages: [\"pl\\0\"]",
