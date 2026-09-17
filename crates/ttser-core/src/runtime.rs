@@ -2,7 +2,7 @@ use crate::{
     TextOutput, TranscriptReview,
     audio::{Cue, Recording, Sounds},
     config::Config,
-    feedback, history,
+    history,
     speech::{Engine, Transcript},
     state::{Action, State, Trigger},
 };
@@ -92,7 +92,7 @@ pub fn run(
                 break;
             }
             let started = Instant::now();
-            let history = match history::Entry::start(&config, &samples) {
+            let mut history = match history::Entry::start(&config, &samples) {
                 Ok(entry) => entry,
                 Err(error) => {
                     eprintln!("Could not save dictation audio: {error:#}");
@@ -120,12 +120,14 @@ pub fn run(
                         let _ = events.send(WorkerEvent::Reviewing);
                     },
                     |text| {
-                        feedback::save(
-                            &config,
-                            transcript,
-                            text,
-                            history.as_ref().map(|entry| entry.directory.as_path()),
-                        )
+                        if let Some(entry) = history.as_mut() {
+                            entry.correct(
+                                transcript,
+                                text,
+                                started.elapsed().as_millis() as u64,
+                            )?;
+                        }
+                        Ok(())
                     },
                 ),
             };
@@ -325,6 +327,13 @@ mod tests {
                 text: "original".into(),
                 ..Transcript::default()
             };
+            let temp = tempfile::tempdir().unwrap();
+            let config = Config {
+                history_dir: Some(temp.path().join("history")),
+                model: Some("model.bin".into()),
+                ..Config::default()
+            };
+            let mut entry = history::Entry::start(&config, &[0.1]).unwrap().unwrap();
             let mut saved = Vec::new();
             let (status, result) = review_and_insert(
                 &mut output,
@@ -333,7 +342,7 @@ mod tests {
                 || {},
                 |text| {
                     saved.push(text.to_owned());
-                    Ok(())
+                    entry.correct(&transcript, text, 10)
                 },
             );
             assert_eq!(status, expected_status);
@@ -353,6 +362,24 @@ mod tests {
                     .collect::<Vec<_>>()
             );
             assert_eq!(transcript.text, "original");
+            entry.finish(Some(&transcript), status, None, 20).unwrap();
+            let directory = std::fs::read_dir(config.history_dir.unwrap())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let record: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+                &std::fs::read_to_string(directory.join("record.yaml")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(record["transcript"]["text"], "original");
+            assert_eq!(
+                record
+                    .get("corrected_text")
+                    .and_then(|value| value.as_str()),
+                approved.filter(|text| *text != "original")
+            );
         }
     }
 

@@ -6,9 +6,6 @@ languages: [pl, en]
 prompt: ""
 # Set a directory to retain audio and results locally, e.g. ~/.local/state/ttser/history.
 history_dir: null
-# Only changed approvals are saved; null disables correction collection.
-# Omit to use $XDG_STATE_HOME/ttser/feedback (or ~/.local/state/ttser/feedback).
-feedback_dir: ~/.local/state/ttser/feedback
 threads: 4
 cpu: false
 # Exact name from `ttser devices`; null uses the system default.

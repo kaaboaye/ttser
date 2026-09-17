@@ -31,7 +31,6 @@ model: ~/.local/share/whisper/ggml-large-v3-turbo.bin
 languages: [pl, en]
 prompt: ""
 history_dir: null
-feedback_dir: ~/.local/state/ttser/feedback
 threads: 4
 cpu: false
 input_device: null
@@ -46,7 +45,7 @@ Settings resolve as **defaults → YAML → explicit CLI flags**. Unknown YAML k
 produce a warning with the field name and are ignored; their values are not
 retained in history. Invalid values of known fields and malformed YAML remain
 errors. `prompt: ""` disables the initial prompt. Relative
-`model`, `socket`, `history_dir` and `feedback_dir` paths in YAML resolve relative
+`model`, `socket` and `history_dir` paths in YAML resolve relative
 to that file; `~/` is expanded.
 CLI paths resolve relative to the working directory. Model files are supplied by
 the user; ttser does not download them.
@@ -96,12 +95,13 @@ gets a unique subdirectory containing:
 - `audio.wav`: original mono 16 kHz float samples, before volume normalization.
 - `record.yaml`: raw output, cleaned text, selected language, language detection
   probabilities when available, settings, timestamp, processing time, outcome
-  and any transcription/insertion error.
+  and any transcription/insertion error. Approved corrections are stored in the
+  top-level `corrected_text` field of this same file.
 
 `transcript.audio` records the original peak, applied gain, and resulting peak.
 Multiplying the saved samples by that gain reconstructs the buffer passed to
 Whisper. It is null when input is skipped without inference. Record schema
-version 2 includes normalization; original recordings remain unchanged.
+version 3 also includes `corrected_text` only for changed approvals.
 
 The recognizer still receives its audio directly from memory. History is a
 separate local copy; it is never uploaded and has no automatic retention limit.
@@ -129,15 +129,16 @@ feedback. Editing and then reverting the change does not count. Whitespace and
 newlines count as changes; approving an empty correction saves feedback without
 pasting. Cancellation or shutdown saves no correction.
 
-Feedback defaults to `$XDG_STATE_HOME/ttser/feedback`, or
-`~/.local/state/ttser/feedback` when XDG_STATE_HOME is unset. Set `feedback_dir`
-to override the location, or `null` to disable it. Each private YAML file contains
-`transcript` (including original cleaned and raw text), `corrected_text`, a
-timestamp and `history_directory` linking the audio when history is enabled.
-Feedback works without audio history and remains useful if a later paste fails.
-The original history transcript is never overwritten by the correction. Feedback
-is local, is not uploaded or used for training automatically, and has no automatic
-retention limit. Write errors are reported on stderr without blocking the paste.
+Corrections are stored directly in the recording's `record.yaml`, in the top-level
+`corrected_text` field. The original remains in `transcript.text`; `audio.wav`
+is next to the record. There are no separate feedback files or directories.
+The field is absent for unchanged approvals and cancelled reviews, and can be an
+empty string when an empty correction is approved. It is saved before insertion
+and retained even if the paste fails.
+
+Correction collection uses `history_dir`: when history is disabled, corrections
+are not saved. Records remain local and are not uploaded or used for training
+automatically. Write errors are reported on stderr without blocking the paste.
 
 ## Run
 
@@ -192,5 +193,5 @@ To transcribe a WAV to stdout without microphone or desktop interaction:
   replacement. Restored selections are served while the daemon stays alive;
   persistence after shutdown depends on a clipboard manager.
 - Errors go to stderr, `status`, and an error tone. Transcripts and recordings
-  are retained according to the history and feedback settings above. Failed
+  are retained only when local history is enabled. Failed
   insertions are not retried automatically because the target may already have received the text.

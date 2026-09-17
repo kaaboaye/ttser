@@ -9,7 +9,8 @@ use std::{
 };
 
 pub struct Entry {
-    pub(crate) directory: PathBuf,
+    directory: PathBuf,
+    corrected_text: Option<String>,
     settings: Config,
     created_at_unix_ms: u64,
     sample_count: usize,
@@ -24,6 +25,8 @@ struct Record<'a> {
     sample_count: usize,
     processing_ms: u64,
     status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    corrected_text: Option<&'a str>,
     settings: &'a Config,
     transcript: Option<&'a Transcript>,
     error: Option<&'a str>,
@@ -62,12 +65,23 @@ impl Entry {
         settings.model = Some(config.model_path()?);
         let entry = Self {
             directory,
+            corrected_text: None,
             settings,
             created_at_unix_ms: now.as_millis() as u64,
             sample_count: samples.len(),
         };
         entry.finish(None, "recorded", None, 0)?;
         Ok(Some(entry))
+    }
+
+    pub fn correct(
+        &mut self,
+        transcript: &Transcript,
+        text: &str,
+        processing_ms: u64,
+    ) -> Result<()> {
+        self.corrected_text = (text != transcript.text).then(|| text.to_owned());
+        self.finish(Some(transcript), "reviewed", None, processing_ms)
     }
 
     pub fn finish(
@@ -78,13 +92,14 @@ impl Entry {
         processing_ms: u64,
     ) -> Result<()> {
         let record = Record {
-            version: 2,
+            version: 3,
             program_version: env!("CARGO_PKG_VERSION"),
             created_at_unix_ms: self.created_at_unix_ms,
             sample_rate: 16_000,
             sample_count: self.sample_count,
             processing_ms,
             status,
+            corrected_text: self.corrected_text.as_deref(),
             settings: &self.settings,
             transcript,
             error,
@@ -99,7 +114,7 @@ impl Entry {
     }
 }
 
-pub(crate) fn create_private(path: &Path) -> Result<File> {
+fn create_private(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -117,6 +132,47 @@ mod tests {
     #[test]
     fn history_is_disabled_by_default() {
         assert!(Entry::start(&Config::default(), &[0.1]).unwrap().is_none());
+    }
+
+    #[test]
+    fn corrections_live_in_record_and_survive_final_status_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config {
+            history_dir: Some(temp.path().join("history")),
+            model: Some(PathBuf::from("model.bin")),
+            ..Config::default()
+        };
+        let transcript = Transcript {
+            text: "Żółw 🐢".into(),
+            raw_text: " Żółw 🐢.".into(),
+            ..Transcript::default()
+        };
+        for correction in [None, Some("Żółw 🐢"), Some("Żółw 🐢\n"), Some("")] {
+            let mut entry = Entry::start(&config, &[0.1]).unwrap().unwrap();
+            let path = entry.directory.join("record.yaml");
+            let read = || -> serde_yaml_ng::Value {
+                serde_yaml_ng::from_str(&fs::read_to_string(&path).unwrap()).unwrap()
+            };
+            assert!(read().get("corrected_text").is_none());
+            if let Some(text) = correction {
+                entry.correct(&transcript, text, 10).unwrap();
+            }
+            for status in ["inserted", "insertion_failed"] {
+                entry.finish(Some(&transcript), status, None, 20).unwrap();
+                let record = read();
+                assert_eq!(record["version"], 3);
+                assert_eq!(record["status"], status);
+                assert_eq!(record["transcript"]["text"], transcript.text);
+                assert_eq!(record["transcript"]["raw_text"], transcript.raw_text);
+                assert_eq!(
+                    record
+                        .get("corrected_text")
+                        .and_then(|value| value.as_str()),
+                    correction.filter(|text| *text != transcript.text)
+                );
+                assert_eq!(fs::read_dir(&entry.directory).unwrap().count(), 2);
+            }
+        }
     }
 
     #[test]

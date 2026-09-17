@@ -1,6 +1,5 @@
 pub mod audio;
 pub mod config;
-mod feedback;
 mod history;
 pub mod runtime;
 pub mod speech;

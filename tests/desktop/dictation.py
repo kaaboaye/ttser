@@ -22,7 +22,7 @@ def main():
         module = command("pactl", "load-module", "module-null-sink", "sink_name=" + sink).decode().strip()
         test.cleanup.append(lambda: command("pactl", "unload-module", module))
         config = test.root / "config.yaml"
-        settings = {"socket": str(test.root / "control.sock"), "input_device": "pulse", "languages": args.languages, "prompt": "", "max_seconds": 60, "history_dir": str(test.root / "history"), "feedback_dir": str(test.root / "feedback")}
+        settings = {"socket": str(test.root / "control.sock"), "input_device": "pulse", "languages": args.languages, "prompt": "", "max_seconds": 60, "history_dir": str(test.root / "history")}
         if args.model:
             settings["model"] = str(args.model.resolve())
         # JSON is a YAML subset, so this needs no Python YAML dependency.
@@ -60,7 +60,6 @@ def main():
         wait_for(lambda: active_window() == review_window)
         command("xdotool", "key", "Return")
         wait_for(ready, timeout=90)
-        test.check("unchanged-no-feedback", False, (test.root / "feedback").exists())
         test.check("busy-key-repeat-after-completion", "idle", control("start"))
         test.check("busy-release", "idle", control("stop"))
         (test.root / "speech.sent").touch()
@@ -77,6 +76,7 @@ def main():
         record = (entries[0] / "record.yaml").read_text()
         test.check("history-transcript", True, args.contains.lower() in record.lower())
         test.check("history-inserted", True, "status: inserted" in record)
+        test.check("unchanged-no-feedback", False, "\ncorrected_text:" in record)
         for name in SELECTIONS:
             test.check("restored-" + name, "before dictation " + name, selection(name).decode())
         control("shutdown")

@@ -11,7 +11,6 @@ pub struct Config {
     pub model: Option<PathBuf>,
     pub languages: Vec<String>,
     pub history_dir: Option<PathBuf>,
-    pub feedback_dir: Option<PathBuf>,
     pub prompt: String,
     pub threads: u32,
     pub cpu: bool,
@@ -29,14 +28,6 @@ impl Default for Config {
             model: None,
             languages: Vec::new(),
             history_dir: None,
-            feedback_dir: env::var_os("XDG_STATE_HOME")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    env::var_os("HOME")
-                        .or_else(|| env::var_os("USERPROFILE"))
-                        .map(|home| PathBuf::from(home).join(".local/state"))
-                })
-                .map(|state| state.join("ttser/feedback")),
             prompt: String::new(),
             threads: 4,
             cpu: false,
@@ -79,7 +70,6 @@ impl Config {
             &mut config.model,
             &mut config.socket,
             &mut config.history_dir,
-            &mut config.feedback_dir,
         ]
         .into_iter()
         .flatten()
@@ -146,7 +136,7 @@ impl Config {
     }
 }
 
-pub(crate) fn expand_home(path: &Path) -> Result<PathBuf> {
+fn expand_home(path: &Path) -> Result<PathBuf> {
     if let Ok(rest) = path.strip_prefix("~") {
         return Ok(
             PathBuf::from(env::var_os("HOME").context("Cannot expand ~: HOME is unset")?)
@@ -164,11 +154,10 @@ mod tests {
     fn yaml_supports_multiline_prompt_and_relative_model() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yaml");
-        fs::write(&path, "model: models/test.bin\nhistory_dir: history\nfeedback_dir: corrections\nlanguages: [pl]\nthreads: 8\nprompt: |\n  Rust i Linux.\n  Zażółć gęślą jaźń.\n").unwrap();
+        fs::write(&path, "model: models/test.bin\nhistory_dir: history\nlanguages: [pl]\nthreads: 8\nprompt: |\n  Rust i Linux.\n  Zażółć gęślą jaźń.\n").unwrap();
         let config = Config::load(Some(&path)).unwrap();
         assert_eq!(config.model.unwrap(), dir.path().join("models/test.bin"));
         assert_eq!(config.history_dir.unwrap(), dir.path().join("history"));
-        assert_eq!(config.feedback_dir.unwrap(), dir.path().join("corrections"));
         assert_eq!(config.prompt, "Rust i Linux.\nZażółć gęślą jaźń.\n");
         assert_eq!(config.languages, ["pl"]);
         assert_eq!(config.threads, 8);

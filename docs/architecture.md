@@ -13,8 +13,8 @@ fn insert(&mut self, text: &str) -> anyhow::Result<()>;
 fn review(&mut self, text: &str, cancelled: &AtomicBool) -> anyhow::Result<Option<String>>;
 ```
 
-Review returns approved text or cancellation. Core saves changed approvals before
-insertion, preserving the original transcript. The Linux adapter embeds a small
+Review returns approved text or cancellation. Core saves changed approvals in the history record’s `corrected_text` field
+before insertion, preserving the original in `transcript.text`. The Linux adapter embeds a small
 Python/PyGObject GTK 3 editor and exchanges UTF-8 through process pipes; it kills
 the editor on shutdown. i3 recognizes the window as a transient dialog.
 
