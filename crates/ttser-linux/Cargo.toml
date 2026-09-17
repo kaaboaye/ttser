@@ -17,6 +17,11 @@ ctrlc.workspace = true
 fs2.workspace = true
 x11rb.workspace = true
 ttser-core = { path = "../ttser-core" }
+atspi = { version = "0.30.0", default-features = false, features = ["proxies", "tokio", "zbus"] }
+tokio = { version = "1.53.1", features = ["rt", "time", "net", "sync", "macros"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0.151"
+futures-lite = "2"
 
 [dev-dependencies]
 tempfile.workspace = true

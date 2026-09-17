@@ -10,7 +10,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install 'PyYAML>=6,<7'
-      - run: python -m unittest discover -s tests -p test_audio_benchmarks.py
+      - run: python -m unittest discover -s tests -p 'test_*benchmarks.py'
   linux:
     runs-on: ubuntu-latest
     steps:

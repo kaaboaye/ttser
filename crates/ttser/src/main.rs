@@ -30,6 +30,9 @@ enum Command {
         /// Stop and discard recordings longer than this many seconds.
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=3600))]
         max_seconds: Option<u32>,
+        /// Experimental local context reports; use a development directory.
+        #[arg(long)]
+        context_probe_dir: Option<PathBuf>,
     },
     /// Begin recording. Invoke on push-to-talk key press.
     Start,
@@ -96,6 +99,7 @@ fn main() -> Result<()> {
             model,
             input_device,
             max_seconds,
+            context_probe_dir,
         } => {
             model.apply(&mut config);
             if input_device.is_some() {
@@ -109,9 +113,13 @@ fn main() -> Result<()> {
             return daemon::serve(
                 ipc::socket_path(cli.socket.or(config.socket.clone()))?,
                 config,
+                context_probe_dir,
             );
             #[cfg(not(target_os = "linux"))]
-            anyhow::bail!("Desktop dictation is currently implemented for Linux/X11 only")
+            {
+                let _ = context_probe_dir;
+                anyhow::bail!("Desktop dictation is currently implemented for Linux/X11 only")
+            }
         }
         Command::Devices => audio::list_devices(),
         Command::Transcribe { file, model } => {

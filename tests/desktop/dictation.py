@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--model", type=Path)
     parser.add_argument("--languages", nargs="*", default=["en"], help="Allowed languages; one fixes the language, no values permits all")
     parser.add_argument("--contains", default="ask not what your country can do for you")
+    parser.add_argument("--system-hotkey", action="store_true", help="Use the existing Scroll Lock binding and default socket; stop the normal daemon first")
     args = parser.parse_args()
     assert args.binary.is_file() and args.wav.is_file()
     with DesktopSession("dictation") as test:
@@ -23,12 +24,15 @@ def main():
         test.cleanup.append(lambda: command("pactl", "unload-module", module))
         config = test.root / "config.yaml"
         settings = {"socket": str(test.root / "control.sock"), "input_device": "pulse", "languages": args.languages, "prompt": "", "max_seconds": 60, "history_dir": str(test.root / "history")}
+        if args.system_hotkey:
+            settings["socket"] = str(Path(os.environ["XDG_RUNTIME_DIR"]) / "ttser/control.sock")
+            assert not Path(settings["socket"]).exists(), "Stop the normal daemon before this explicit system hotkey test"
         if args.model:
             settings["model"] = str(args.model.resolve())
         # JSON is a YAML subset, so this needs no Python YAML dependency.
         config.write_text(json.dumps(settings))
         env = {**os.environ, "PULSE_SOURCE": sink + ".monitor"}
-        daemon = subprocess.Popen([str(args.binary), "--config", str(config), "serve"], env=env, stdout=subprocess.DEVNULL, stderr=(test.root / "daemon.log").open("w"))
+        daemon = subprocess.Popen([str(args.binary), "--config", str(config), "serve", "--context-probe-dir", str(test.root / "context")], env=env, stdout=subprocess.DEVNULL, stderr=(test.root / "daemon.log").open("w"))
         test.cleanup.append(lambda: stop_process(daemon))
         def control(action):
             return command(str(args.binary), "--config", str(config), action).decode().strip()
@@ -45,7 +49,13 @@ def main():
         for name in SELECTIONS:
             set_selection(name, ("before dictation " + name).encode())
         test.check("unmatched-stop", "idle", control("stop"))
-        test.check("start", "recording", control("start"))
+        if args.system_hotkey:
+            test.cleanup.append(lambda: command("xdotool", "keyup", "Scroll_Lock"))
+            command("xdotool", "keydown", "Scroll_Lock")
+            wait_for(lambda: control("status") == "recording")
+            test.check("hotkey-start", "recording", control("status"))
+        else:
+            test.check("start", "recording", control("start"))
         test.check("key-repeat", "recording", control("start"))
         time.sleep(0.2)
         player = subprocess.Popen(["paplay", "--device=" + sink, str(args.wav)])
@@ -53,7 +63,12 @@ def main():
         assert player.wait(timeout=45) == 0
         time.sleep(0.2)
         assert active_window() == window, "Test lost focus before transcription"
-        test.check("stop", "processing", control("stop"))
+        if args.system_hotkey:
+            command("xdotool", "keyup", "Scroll_Lock")
+            wait_for(lambda: control("status") != "recording")
+            test.check("hotkey-stop", "processing", control("status"))
+        else:
+            test.check("stop", "processing", control("stop"))
         test.check("busy-press", "processing", control("start"))
         wait_for(ready, timeout=90)
         test.check("busy-key-repeat-after-completion", "idle", control("start"))
@@ -72,6 +87,18 @@ def main():
         record = (entries[0] / "record.yaml").read_text()
         test.check("history-transcript", True, args.contains.lower() in record.lower())
         test.check("history-inserted", True, "status: inserted" in record)
+        wait_for(lambda: len(list((test.root / "context").glob("*/result.json"))) == 1)
+        context_result = json.loads(next((test.root / "context").glob("*/result.json")).read_text())
+        snapshot = json.loads(next((test.root / "context").glob("*/context.json")).read_text())
+        test.check("context-session-count", 1, len(list((test.root / "context").iterdir())))
+        test.check("context-history-link", str(entries[0]), context_result["history_directory"])
+        test.check("context-transcript", transcript, context_result["transcript"])
+        test.check("context-window", int(window), snapshot["window_id"])
+        test.check("context-captured", "captured", snapshot["status"])
+        test.check("context-terminal", "terminal", snapshot["role"])
+        if args.system_hotkey:
+            test.check("context-through-grab", "remembered_before_grab", snapshot["focus_source"])
+        test.check("context-bounded", True, sum(len(value) for value in snapshot["context"].values()) <= 3000)
         for name in SELECTIONS:
             test.check("restored-" + name, "before dictation " + name, selection(name).decode())
         control("shutdown")

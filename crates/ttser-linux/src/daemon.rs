@@ -14,9 +14,12 @@ use ttser_core::{
     runtime::{self, Command, Controller},
 };
 
-pub fn serve(path: PathBuf, config: Config) -> Result<()> {
+pub fn serve(path: PathBuf, config: Config, context_probe_dir: Option<PathBuf>) -> Result<()> {
     let server = ipc::Server::bind(path.clone())?;
     let output = X11TextOutput::new(Duration::from_millis(config.paste_delay_ms))?;
+    let observer = context_probe_dir
+        .map(crate::context_probe::ContextRecorder::new)
+        .transpose()?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let signal = shutdown.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))?;
@@ -58,7 +61,15 @@ pub fn serve(path: PathBuf, config: Config) -> Result<()> {
         server
     });
     eprintln!("Loading model; control socket: {}", path.display());
-    let result = runtime::run(config, output, commands, shutdown.clone());
+    let result = runtime::run(
+        config,
+        output,
+        commands,
+        shutdown.clone(),
+        observer
+            .as_ref()
+            .map(|value| value as &dyn ttser_core::observation::RecordingObserver),
+    );
     shutdown.store(true, Ordering::Relaxed);
     let _server = transport
         .join()

@@ -1,5 +1,6 @@
 """Helpers for opt-in tests that temporarily use a live X11 desktop."""
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -128,6 +129,7 @@ class DesktopSession:
         process = subprocess.Popen(
             ["xfce4-terminal", "--disable-server", "--title=" + title, "--geometry=80x8",
              "--execute", "python3", str(Path(__file__).with_name("receiver.py")), str(self.root)],
+            env={**os.environ, "NO_AT_BRIDGE": "0"},
             stdout=subprocess.DEVNULL, stderr=(self.root / "terminal.log").open("w"),
         )
         self.cleanup.append(lambda: stop_process(process))

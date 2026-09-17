@@ -96,10 +96,56 @@ Raw word distance still needs human interpretation, particularly for fillers.
 Offline harness tests make no API calls:
 
 ```sh
-python3 -m unittest discover -s tests -p test_audio_benchmarks.py
+python3 -m unittest discover -s tests -p 'test_*benchmarks.py'
 ```
 
+## Text correction benchmark
+
+`tests/compare_corrections.py` sends explicitly supplied transcripts and bounded
+text context to `openai/gpt-oss-120b` through OpenRouter. It makes paid requests;
+it does not capture audio, modify history, paste text, or configure the daemon.
+Keep private case files and reports in `target/benchmarks/` or `/tmp`.
+
+The case file is a JSON list. Each case has `id`, `transcript`, `references`
+(a nonempty list of accepted answers), and optional `context`. Context accepts
+`application`, `window_title`, `before_cursor`, `after_cursor`, and `selected_text`.
+For example, a synthetic case is:
+
+```json
+[{"id":"mixed-language","transcript":"Uruchom cargo test.",
+  "references":["Uruchom cargo test."],
+  "context":{"window_title":"English editor","after_cursor":"Type your message"}}]
+```
+
+```sh
+python3 tests/compare_corrections.py \
+  --config "$HOME/.config/ttser/config.yaml" \
+  --cases target/benchmarks/correction-cases.json \
+  --output target/benchmarks/correction-results \
+  --prompts conservative contextual --effort low --repeat 3
+```
+
+The harness always uses `provider.sort: throughput`. Requests run sequentially
+in a fixed randomized order; elapsed time includes the complete response and
+network overhead. `--effort medium` or `high` permits reasoning comparisons;
+`--prompts polish minimal` compares two Polish instruction variants. Reasoning
+text is excluded from responses; its tokens still contribute to latency/cost.
+Context is limited to 2,800 Unicode characters, keeping the tail before the
+cursor and the beginning after it. References and diagnostic metadata are
+withheld from API requests. The key and configuration are not copied to output.
+
+`report.json` records the exact prompt, cases, answers, provider, usage/cost,
+finish reason and local word edit distances. Incomplete/empty responses are
+reported as invalid. No automatic retries; authentication/billing refusals stop
+the run. Case and punctuation differences are ignored by the word metric,
+so review identifiers, punctuation, spelling variants, and meaning manually.
+Distinguish real captured context from synthetic context in case metadata;
+do not treat synthetic stress tests as a production accuracy estimate.
+
 ## Live X11 integration tests
+
+The read-only context capture test is documented in
+[Experimental context capture](context-probe.md#verification).
 
 These opt-in tests temporarily focus isolated windows and use both selections.
 Run them on an idle Linux/X11 desktop. They save and restore the previous focus,

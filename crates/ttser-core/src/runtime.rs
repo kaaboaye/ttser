@@ -3,6 +3,7 @@ use crate::{
     audio::{Cue, Recording, Sounds},
     config::Config,
     history,
+    observation::{RecordingObservation, RecordingObserver},
     speech::Engine,
     state::{Action, State, Trigger},
 };
@@ -69,12 +70,14 @@ pub fn run(
     mut output: impl TextOutput,
     commands: Receiver<Request>,
     shutdown: Arc<AtomicBool>,
+    observer: Option<&dyn RecordingObserver>,
 ) -> Result<()> {
     config.validate()?;
     let sounds = Sounds::new()?;
     let input_device = config.input_device.clone();
     let max_seconds = config.max_seconds;
-    let (jobs, job_rx) = mpsc::sync_channel::<Vec<f32>>(1);
+    type Job = (Vec<f32>, Option<Box<dyn RecordingObservation>>);
+    let (jobs, job_rx) = mpsc::sync_channel::<Job>(1);
     let (events, event_rx) = mpsc::channel();
     let cancelled = shutdown.clone();
     let worker = thread::spawn(move || {
@@ -86,7 +89,7 @@ pub fn run(
             }
         };
         let _ = events.send(WorkerEvent::Ready);
-        while let Ok(samples) = job_rx.recv() {
+        while let Ok((samples, observation)) = job_rx.recv() {
             if cancelled.load(Ordering::Relaxed) {
                 break;
             }
@@ -108,6 +111,13 @@ pub fn run(
                     Err(error) => ("insertion_failed", Err(error)),
                 },
             };
+            if let Some(observation) = observation {
+                observation.finished(
+                    history.as_ref().map(history::Entry::directory),
+                    transcription.as_ref().ok(),
+                    outcome,
+                );
+            }
             if let Some(entry) = history {
                 let error = result.as_ref().err().map(|error| format!("{error:#}"));
                 if let Err(error) = entry.finish(
@@ -131,6 +141,7 @@ pub fn run(
         error: None,
     };
     let mut recording: Option<Recording> = None;
+    let mut observation = None;
     let mut trigger = Trigger::default();
     let mut fatal = None;
     while !shutdown.load(Ordering::Relaxed) {
@@ -154,6 +165,7 @@ pub fn run(
         }
         if let Some(error) = recording.as_ref().and_then(Recording::error) {
             recording.take();
+            observation.take();
             status.state = State::Idle;
             set_error(&mut status, &sounds, anyhow::anyhow!(error));
         }
@@ -167,6 +179,7 @@ pub fn run(
                 Action::Record => match Recording::start(input_device.as_deref(), max_seconds) {
                     Ok(capture) => {
                         recording = Some(capture);
+                        observation = observer.and_then(RecordingObserver::started);
                         status = Status {
                             state: State::Recording,
                             error: None,
@@ -186,10 +199,12 @@ pub fn run(
                         .finish();
                     sounds.play(Cue::Stop);
                     match audio.and_then(|samples| {
-                        jobs.send(samples).context("Transcription worker stopped")
+                        jobs.send((samples, observation.take()))
+                            .map_err(|_| anyhow::anyhow!("Transcription worker stopped"))
                     }) {
                         Ok(()) => status.state = State::Processing,
                         Err(error) => {
+                            observation.take();
                             status.state = State::Idle;
                             set_error(&mut status, &sounds, error);
                         }

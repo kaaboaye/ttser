@@ -30,6 +30,10 @@ struct Record<'a> {
 }
 
 impl Entry {
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     pub fn start(config: &Config, samples: &[f32]) -> Result<Option<Self>> {
         let Some(root) = &config.history_dir else {
             return Ok(None);
