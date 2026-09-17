@@ -69,7 +69,8 @@ The prompt supplies text context; it does not restrict language detection.
 It defaults to empty. Prefer vocabulary or example text to instructions: the
 previous Polish instruction prompt distorted an English test recording even
 with `languages: [en]` and translation disabled.
-Restart `serve` after editing the configuration.
+Restart `serve` after editing the configuration. With the
+[Linux desktop service](linux.md), use `systemctl --user restart ttser.service`.
 
 ## Audio level
 
@@ -142,6 +143,11 @@ are not saved. Records remain local and are not uploaded or used for training
 automatically. Write errors are reported on stderr without blocking the paste.
 
 ## Run
+
+For automatic startup in i3 with audio startup ordering and recovery after
+failures, follow [Linux desktop integration](linux.md). The commands below run
+the daemon manually; stop the desktop service before starting a manual daemon
+on the same socket.
 
 ```sh
 ./target/release/ttser devices
