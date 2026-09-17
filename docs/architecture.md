@@ -14,9 +14,13 @@ fn review(&mut self, text: &str, cancelled: &AtomicBool) -> anyhow::Result<Optio
 ```
 
 Review returns approved text or cancellation. Core saves changed approvals in the history record’s `corrected_text` field
-before insertion, preserving the original in `transcript.text`. The Linux adapter embeds a small
-Python/PyGObject GTK 3 editor and exchanges UTF-8 through process pipes; it kills
-the editor on shutdown. i3 recognizes the window as a transient dialog.
+before insertion, preserving the original in `transcript.text`. The Linux adapter implements
+the GTK 4 editor in Rust, in the same process as the daemon. A dedicated GTK
+thread receives review requests from the dictation worker and continues serving
+the clipboard between reviews. Text stays in memory; the event loop observes
+cancellation and destroys the window before acknowledging shutdown. i3 recognizes
+the window as a transient dialog. All product code
+is Rust; Python is confined to integration tests.
 
 An implementation owns focus, clipboard lifetime and keyboard injection details.
 Core never sees X11 windows, selection atoms, Unix sockets or platform keycodes.

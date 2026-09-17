@@ -101,7 +101,9 @@ python3 -m unittest discover -s tests -p test_audio_benchmarks.py
 
 ## Headless review dialog integration
 
-Requires Python 3 with PyGObject/GTK 3, Xvfb, xauth, i3, xdotool and xclip:
+The Rust editor requires GTK 4. The test receiver additionally requires Python 3
+with PyGObject/GTK 3, Xvfb, xauth, i3, xdotool and xclip. Python and GTK 3 are
+test-only dependencies:
 
 ```sh
 cargo build -p ttser-linux --example review_text --locked
@@ -112,6 +114,10 @@ This runs in CI and owns a separate X server and i3 socket. It tests floating
 placement, unchanged approval, Unicode, multiline correction, reverted edits,
 empty approval, Escape, closing the dialog, shutdown, long text, focus restoration
 closed destinations, and clipboard preservation through the production review and insertion backend.
+Successive approvals and cancellations reuse one Rust worker thread in a process
+whose PATH has no executables, to verify GTK reuse and independence from Python.
+Approval is exercised through Enter, keypad Enter and the paste button.
+Copying inside the editor must leave the clipboard usable after the dialog closes.
 It also checks that holding Enter does not paste until release and that the
 receiving field never gets an Enter key. Core tests cover exact feedback matching,
 private persistence, disabled collection, write errors and paste failures.

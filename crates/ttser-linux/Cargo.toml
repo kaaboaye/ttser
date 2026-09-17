@@ -17,6 +17,8 @@ ctrlc.workspace = true
 fs2.workspace = true
 x11rb.workspace = true
 ttser-core = { path = "../ttser-core" }
+gtk4 = "0.10"
+gdk4-x11 = "0.10"
 
 [dev-dependencies]
 tempfile.workspace = true

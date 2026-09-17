@@ -4,14 +4,15 @@
 
 Requires Rust 1.88 or newer, a C/C++ toolchain, CMake, Clang/libclang, pkg-config,
 ALSA development files, and X11 with the XTEST extension. The default build also
-requires Vulkan headers/loader and `glslc` (shaderc). The review window uses
-Python 3, PyGObject and GTK 3 at runtime (`python-gobject gtk3` on Arch/Manjaro;
-`python3-gi gir1.2-gtk-3.0` on Debian/Ubuntu).
+requires Vulkan headers/loader and `glslc` (shaderc). The review window is
+implemented in Rust using GTK 4 (`gtk4` on Arch/Manjaro; `libgtk-4-dev` for
+building and `libgtk-4-1` at runtime on Debian/Ubuntu). Python is only used by
+integration tests and is not required to build or run the product.
 
 On Arch/Manjaro the build dependencies are:
 
 ```sh
-sudo pacman -S --needed base-devel cmake clang pkgconf alsa-lib vulkan-headers vulkan-icd-loader shaderc python-gobject gtk3
+sudo pacman -S --needed base-devel cmake clang pkgconf alsa-lib vulkan-headers vulkan-icd-loader shaderc gtk4
 cargo build --release
 ```
 

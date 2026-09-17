@@ -18,5 +18,5 @@ configuration automatically.
 
 The transcript review dialog floats automatically in i3 via its dialog and
 transient-window hints; no extra binding or floating rule is needed. It requires
-Python 3, PyGObject and GTK 3. Enter pastes, Shift+Enter adds a newline, and Escape
+GTK 4. Enter pastes, Shift+Enter adds a newline, and Escape
 cancels. See [review and feedback settings](usage.md#review-and-correction-feedback).

@@ -62,16 +62,24 @@ def main():
             spawn([sys.executable, __file__, "--receiver", str(data)], stdout=logs)
             destination = find_window("^TTSER review test destination$")
             wait_for(data.exists)
-            for case in ["unchanged", "multiline", "reverted", "cancel", "close", "shutdown", "empty", "long", "destination-closed"]:
+            helper = None
+            for case in ["unchanged", "multiline", "reverted", "button", "keypad", "copy", "copy-cancel", "cancel", "close", "shutdown", "empty", "long", "destination-closed"]:
                 focus(destination)
                 command("xdotool", "key", "ctrl+a", "BackSpace")
                 wait_for(lambda: json.loads(data.read_text())["text"] == "")
                 for name in ("clipboard", "primary"):
                     set_selection(name, ("original " + name).encode())
                 original = "Zażółć gęślą 🐢" if case != "long" else "Żółw 🐢 " * 12000
-                helper = spawn([str(REPO / "target/debug/examples/review_text")], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-                helper.stdin.write(original.encode())
-                helper.stdin.close()
+                if helper is None:
+                    # The product must work without an interpreter or helper executable on PATH.
+                    helper = spawn(
+                        [str(REPO / "target/debug/examples/review_text")],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        env={**os.environ, "PATH": str(root / "no-executables"), "G_DEBUG": "fatal-criticals"},
+                    )
+                payload = original.encode()
+                helper.stdin.write(len(payload).to_bytes(8, "big") + payload)
+                helper.stdin.flush()
                 dialog = find_window("^ttser — popraw transkrypcję$")
                 wait_for(lambda: command("xdotool", "getactivewindow").decode().strip() == dialog)
                 tree = json.loads(command("i3-msg", "-t", "get_tree"))
@@ -92,7 +100,9 @@ def main():
                 if case == "empty":
                     command("xdotool", "key", "ctrl+a", "BackSpace")
                     expected = ""
-                if case == "cancel":
+                if case in ("copy", "copy-cancel"):
+                    command("xdotool", "key", "ctrl+a", "ctrl+c")
+                if case in ("cancel", "copy-cancel"):
                     command("xdotool", "type", "discard me")
                     command("xdotool", "key", "Escape")
                     expected = ""
@@ -102,13 +112,16 @@ def main():
                 elif case == "shutdown":
                     helper.terminate()
                     expected = ""
+                elif case == "button":
+                    command("xdotool", "key", "ctrl+Tab", "space")
                 else:
                     if case == "destination-closed":
                         command("i3-msg", f'[id="{destination}"] kill')
-                    command("xdotool", "keydown", "Return")
+                    key = "KP_Enter" if case == "keypad" else "Return"
+                    command("xdotool", "keydown", key)
                     time.sleep(0.85 if case == "unchanged" else 0.15)
                     assert json.loads(data.read_text())["text"] == "", "Must wait for Enter release"
-                    command("xdotool", "keyup", "Return")
+                    command("xdotool", "keyup", key)
                 with selectors.DefaultSelector() as ready:
                     ready.register(helper.stdout, selectors.EVENT_READ)
                     assert ready.select(timeout=15), f"No result in {case}"
@@ -118,13 +131,16 @@ def main():
                     assert json.loads(data.read_text())["text"] == ""
                     print(f"PASS: {case}", flush=True)
                     continue
-                assert result == ("cancelled" if case in ("cancel", "close", "shutdown") else "inserted"), (case, result)
+                assert result == ("cancelled" if case in ("cancel", "copy-cancel", "close", "shutdown") else "inserted"), (case, result)
                 wait_for(lambda: json.loads(data.read_text())["text"] == expected)
                 assert json.loads(data.read_text())["enters"] == 0, "Enter leaked into destination"
                 for name in ("clipboard", "primary"):
-                    assert selection(name) == ("original " + name).encode(), (case, name)
+                    expected_selection = original if case in ("copy", "copy-cancel") and name == "clipboard" else "original " + name
+                    assert selection(name) == expected_selection.encode(), (case, name)
                 wait_for(lambda: subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "^ttser — popraw transkrypcję$"], capture_output=True).returncode != 0)
-                stop_process(helper)
+                if case == "shutdown":
+                    assert helper.wait(timeout=5) == 0
+                    helper = None
                 print(f"PASS: {case}", flush=True)
         except BaseException:
             logs.flush()
