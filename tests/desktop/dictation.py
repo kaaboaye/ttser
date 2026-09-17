@@ -5,7 +5,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from common import REPO, SELECTIONS, DesktopSession, active_window, command, selection, set_selection, stop_process, wait_for
+from common import REPO, SELECTIONS, DesktopSession, active_window, command, find_window, selection, set_selection, stop_process, wait_for
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
         module = command("pactl", "load-module", "module-null-sink", "sink_name=" + sink).decode().strip()
         test.cleanup.append(lambda: command("pactl", "unload-module", module))
         config = test.root / "config.yaml"
-        settings = {"socket": str(test.root / "control.sock"), "input_device": "pulse", "languages": args.languages, "prompt": "", "max_seconds": 60, "history_dir": str(test.root / "history")}
+        settings = {"socket": str(test.root / "control.sock"), "input_device": "pulse", "languages": args.languages, "prompt": "", "max_seconds": 60, "history_dir": str(test.root / "history"), "feedback_dir": str(test.root / "feedback")}
         if args.model:
             settings["model"] = str(args.model.resolve())
         # JSON is a YAML subset, so this needs no Python YAML dependency.
@@ -55,7 +55,12 @@ def main():
         assert active_window() == window, "Test lost focus before transcription"
         test.check("stop", "processing", control("stop"))
         test.check("busy-press", "processing", control("start"))
+        wait_for(lambda: control("status") == "reviewing", timeout=90)
+        review_window = find_window("^ttser — popraw transkrypcję$")
+        wait_for(lambda: active_window() == review_window)
+        command("xdotool", "key", "Return")
         wait_for(ready, timeout=90)
+        test.check("unchanged-no-feedback", False, (test.root / "feedback").exists())
         test.check("busy-key-repeat-after-completion", "idle", control("start"))
         test.check("busy-release", "idle", control("stop"))
         (test.root / "speech.sent").touch()

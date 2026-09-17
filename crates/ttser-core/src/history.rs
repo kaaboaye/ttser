@@ -9,7 +9,7 @@ use std::{
 };
 
 pub struct Entry {
-    directory: PathBuf,
+    pub(crate) directory: PathBuf,
     settings: Config,
     created_at_unix_ms: u64,
     sample_count: usize,
@@ -99,7 +99,7 @@ impl Entry {
     }
 }
 
-fn create_private(path: &Path) -> Result<File> {
+pub(crate) fn create_private(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

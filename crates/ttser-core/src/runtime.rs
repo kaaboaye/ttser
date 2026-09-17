@@ -1,9 +1,9 @@
 use crate::{
-    TextOutput,
+    TextOutput, TranscriptReview,
     audio::{Cue, Recording, Sounds},
     config::Config,
-    history,
-    speech::Engine,
+    feedback, history,
+    speech::{Engine, Transcript},
     state::{Action, State, Trigger},
 };
 use anyhow::{Context, Result};
@@ -58,6 +58,7 @@ impl Controller {
 
 enum WorkerEvent {
     Ready,
+    Reviewing,
     Finished(Result<()>),
     Failed(String),
 }
@@ -66,7 +67,7 @@ enum WorkerEvent {
 /// between dictations so it can continue serving resources it owns.
 pub fn run(
     config: Config,
-    mut output: impl TextOutput,
+    mut output: impl TextOutput + TranscriptReview,
     commands: Receiver<Request>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -99,14 +100,34 @@ pub fn run(
                 }
             };
             let transcription = engine.transcribe(&samples);
+            if let (Some(entry), Ok(transcript)) = (&history, &transcription)
+                && let Err(error) = entry.finish(
+                    Some(transcript),
+                    "transcribed",
+                    None,
+                    started.elapsed().as_millis() as u64,
+                )
+            {
+                eprintln!("Could not save transcript before review: {error:#}");
+            }
             let (outcome, result) = match &transcription {
                 Err(error) => ("transcription_failed", Err(anyhow::anyhow!("{error:#}"))),
-                Ok(_) if cancelled.load(Ordering::Relaxed) => ("cancelled", Ok(())),
-                Ok(transcript) if transcript.text.is_empty() => ("empty", Ok(())),
-                Ok(transcript) => match output.insert(&transcript.text) {
-                    Ok(()) => ("inserted", Ok(())),
-                    Err(error) => ("insertion_failed", Err(error)),
-                },
+                Ok(transcript) => review_and_insert(
+                    &mut output,
+                    transcript,
+                    &cancelled,
+                    || {
+                        let _ = events.send(WorkerEvent::Reviewing);
+                    },
+                    |text| {
+                        feedback::save(
+                            &config,
+                            transcript,
+                            text,
+                            history.as_ref().map(|entry| entry.directory.as_path()),
+                        )
+                    },
+                ),
             };
             if let Some(entry) = history {
                 let error = result.as_ref().err().map(|error| format!("{error:#}"));
@@ -140,6 +161,7 @@ pub fn run(
                     status.state = State::Idle;
                     eprintln!("Ready for dictation");
                 }
+                WorkerEvent::Reviewing => status.state = State::Reviewing,
                 WorkerEvent::Finished(result) => {
                     status.state = State::Idle;
                     if let Err(error) = result {
@@ -213,6 +235,43 @@ pub fn run(
     Ok(())
 }
 
+fn review_and_insert(
+    output: &mut (impl TextOutput + TranscriptReview),
+    transcript: &Transcript,
+    cancelled: &AtomicBool,
+    reviewing: impl FnOnce(),
+    save_feedback: impl FnOnce(&str) -> Result<()>,
+) -> (&'static str, Result<()>) {
+    if cancelled.load(Ordering::Relaxed) {
+        return ("cancelled", Ok(()));
+    }
+    if transcript.text.is_empty() {
+        return ("empty", Ok(()));
+    }
+    reviewing();
+    let text = match output.review(&transcript.text, cancelled) {
+        Ok(Some(text)) if !cancelled.load(Ordering::Relaxed) => text,
+        Ok(_) => return ("cancelled", Ok(())),
+        Err(error) => return ("review_failed", Err(error)),
+    };
+    // Approval is useful training data even when the destination rejects the paste.
+    if text != transcript.text
+        && let Err(error) = save_feedback(&text)
+    {
+        eprintln!("Could not save transcription correction: {error:#}");
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return ("cancelled", Ok(()));
+    }
+    if text.is_empty() {
+        return ("empty", Ok(()));
+    }
+    match output.insert(&text) {
+        Ok(()) => ("inserted", Ok(())),
+        Err(error) => ("insertion_failed", Err(error)),
+    }
+}
+
 fn set_error(status: &mut Status, sounds: &Sounds, error: anyhow::Error) {
     eprintln!("Dictation error: {error:#}");
     status.error = Some(format!("{error:#}"));
@@ -222,6 +281,161 @@ fn set_error(status: &mut Status, sounds: &Sounds, error: anyhow::Error) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Output {
+        reviewed: Result<Option<String>>,
+        inserted: Vec<String>,
+        fail_insert: bool,
+        shutdown_in_review: bool,
+    }
+
+    impl TranscriptReview for Output {
+        fn review(&mut self, _: &str, cancelled: &AtomicBool) -> Result<Option<String>> {
+            if self.shutdown_in_review {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+            std::mem::replace(&mut self.reviewed, Ok(None))
+        }
+    }
+
+    impl TextOutput for Output {
+        fn insert(&mut self, text: &str) -> Result<()> {
+            self.inserted.push(text.into());
+            anyhow::ensure!(!self.fail_insert, "insertion failed");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn approval_saves_only_actual_changes_even_when_insertion_fails() {
+        for (approved, fail_insert, expected_status) in [
+            (Some("original"), false, "inserted"),
+            (Some("corrected\nŻółw 🐢"), false, "inserted"),
+            (Some("corrected"), true, "insertion_failed"),
+            (Some(""), false, "empty"),
+            (None, false, "cancelled"),
+        ] {
+            let mut output = Output {
+                reviewed: Ok(approved.map(str::to_owned)),
+                inserted: vec![],
+                fail_insert,
+                shutdown_in_review: false,
+            };
+            let transcript = Transcript {
+                text: "original".into(),
+                ..Transcript::default()
+            };
+            let mut saved = Vec::new();
+            let (status, result) = review_and_insert(
+                &mut output,
+                &transcript,
+                &AtomicBool::new(false),
+                || {},
+                |text| {
+                    saved.push(text.to_owned());
+                    Ok(())
+                },
+            );
+            assert_eq!(status, expected_status);
+            assert_eq!(result.is_err(), fail_insert);
+            assert_eq!(
+                saved,
+                approved
+                    .filter(|text| *text != "original")
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                output.inserted,
+                approved
+                    .filter(|text| !text.is_empty())
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(transcript.text, "original");
+        }
+    }
+
+    #[test]
+    fn cancellation_shutdown_and_editor_errors_never_paste_or_save_feedback() {
+        for (reviewed, shutdown, expected) in [
+            (Ok(None), false, "cancelled"),
+            (Ok(Some("edited".into())), true, "cancelled"),
+            (
+                Err(anyhow::anyhow!("editor unavailable")),
+                false,
+                "review_failed",
+            ),
+        ] {
+            let mut output = Output {
+                reviewed,
+                inserted: vec![],
+                fail_insert: false,
+                shutdown_in_review: shutdown,
+            };
+            let transcript = Transcript {
+                text: "original".into(),
+                ..Transcript::default()
+            };
+            let (status, _) = review_and_insert(
+                &mut output,
+                &transcript,
+                &AtomicBool::new(false),
+                || {},
+                |_| panic!("must not save"),
+            );
+            assert_eq!(status, expected);
+            assert!(output.inserted.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_or_already_cancelled_transcripts_never_open_editor() {
+        for (text, cancelled, expected) in [("", false, "empty"), ("original", true, "cancelled")] {
+            let mut output = Output {
+                reviewed: Ok(None),
+                inserted: vec![],
+                fail_insert: false,
+                shutdown_in_review: false,
+            };
+            let transcript = Transcript {
+                text: text.into(),
+                ..Transcript::default()
+            };
+            let (status, _) = review_and_insert(
+                &mut output,
+                &transcript,
+                &AtomicBool::new(cancelled),
+                || panic!("must not review"),
+                |_| panic!("must not save"),
+            );
+            assert_eq!(status, expected);
+        }
+    }
+
+    #[test]
+    fn feedback_write_failure_does_not_discard_approved_text() {
+        let mut output = Output {
+            reviewed: Ok(Some("edited".into())),
+            inserted: vec![],
+            fail_insert: false,
+            shutdown_in_review: false,
+        };
+        let transcript = Transcript {
+            text: "original".into(),
+            ..Transcript::default()
+        };
+        let (status, result) = review_and_insert(
+            &mut output,
+            &transcript,
+            &AtomicBool::new(false),
+            || {},
+            |_| anyhow::bail!("disk full"),
+        );
+        assert_eq!(status, "inserted");
+        assert!(result.is_ok());
+        assert_eq!(output.inserted, ["edited"]);
+    }
 
     #[test]
     fn control_requests_are_transport_independent() {

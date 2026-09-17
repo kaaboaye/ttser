@@ -4,6 +4,7 @@ pub enum State {
     Idle,
     Recording,
     Processing,
+    Reviewing,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -39,7 +40,7 @@ impl State {
         match self {
             Self::Idle => Action::Record,
             Self::Recording => Action::None,
-            Self::Loading | Self::Processing => Action::Busy,
+            Self::Loading | Self::Processing | Self::Reviewing => Action::Busy,
         }
     }
 
@@ -57,6 +58,7 @@ impl State {
             Self::Idle => "idle",
             Self::Recording => "recording",
             Self::Processing => "processing",
+            Self::Reviewing => "reviewing",
         }
     }
 }
@@ -70,7 +72,12 @@ mod tests {
         assert_eq!(State::Idle.start(), Action::Record);
         assert_eq!(State::Recording.start(), Action::None);
         assert_eq!(State::Recording.stop(), Action::Transcribe);
-        for state in [State::Idle, State::Loading, State::Processing] {
+        for state in [
+            State::Idle,
+            State::Loading,
+            State::Processing,
+            State::Reviewing,
+        ] {
             assert_eq!(state.stop(), Action::None);
         }
     }
@@ -78,6 +85,7 @@ mod tests {
     #[test]
     fn processing_rejects_new_recordings() {
         assert_eq!(State::Processing.start(), Action::Busy);
+        assert_eq!(State::Reviewing.start(), Action::Busy);
         assert_eq!(State::Loading.start(), Action::Busy);
     }
 

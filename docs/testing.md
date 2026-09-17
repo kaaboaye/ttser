@@ -99,6 +99,23 @@ Offline harness tests make no API calls:
 python3 -m unittest discover -s tests -p test_audio_benchmarks.py
 ```
 
+## Headless review dialog integration
+
+Requires Python 3 with PyGObject/GTK 3, Xvfb, xauth, i3, xdotool and xclip:
+
+```sh
+cargo build -p ttser-linux --example review_text --locked
+TTSER_ISOLATED_X11=1 xvfb-run -a -s '-screen 0 1280x800x24' python3 tests/desktop/review.py
+```
+
+This runs in CI and owns a separate X server and i3 socket. It tests floating
+placement, unchanged approval, Unicode, multiline correction, reverted edits,
+empty approval, Escape, closing the dialog, shutdown, long text, focus restoration
+closed destinations, and clipboard preservation through the production review and insertion backend.
+It also checks that holding Enter does not paste until release and that the
+receiving field never gets an Enter key. Core tests cover exact feedback matching,
+private persistence, disabled collection, write errors and paste failures.
+
 ## Live X11 integration tests
 
 These opt-in tests temporarily focus isolated windows and use both selections.

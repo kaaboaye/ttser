@@ -5,7 +5,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use ttser_core::TextOutput;
+use ttser_core::{TextOutput, TranscriptReview};
 use x11rb::{
     CURRENT_TIME, NONE,
     connection::Connection,
@@ -41,6 +41,7 @@ pub struct X11TextOutput {
     clipboard_atom: Atom,
     query_window: u32,
     paste_delay: Duration,
+    review_destination: Option<crate::review::Destination>,
 }
 
 impl X11TextOutput {
@@ -78,6 +79,7 @@ impl X11TextOutput {
             clipboard_atom,
             query_window,
             paste_delay,
+            review_destination: None,
         })
     }
 
@@ -262,10 +264,29 @@ impl X11TextOutput {
     }
 }
 
+impl TranscriptReview for X11TextOutput {
+    fn review(
+        &mut self,
+        text: &str,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<String>> {
+        self.review_destination = None;
+        Ok(
+            crate::review::review(&self.connection, text, cancelled)?.map(|(text, destination)| {
+                self.review_destination = Some(destination);
+                text
+            }),
+        )
+    }
+}
+
 impl TextOutput for X11TextOutput {
     fn insert(&mut self, text: &str) -> Result<()> {
         if text.is_empty() {
             return Ok(());
+        }
+        if let Some(destination) = self.review_destination.take() {
+            destination.restore(&self.connection)?;
         }
         self.wait_for_modifiers()?;
         let (shift, insert) = self.keycodes()?;

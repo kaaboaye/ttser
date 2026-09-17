@@ -4,12 +4,14 @@
 
 Requires Rust 1.88 or newer, a C/C++ toolchain, CMake, Clang/libclang, pkg-config,
 ALSA development files, and X11 with the XTEST extension. The default build also
-requires Vulkan headers/loader and `glslc` (shaderc).
+requires Vulkan headers/loader and `glslc` (shaderc). The review window uses
+Python 3, PyGObject and GTK 3 at runtime (`python-gobject gtk3` on Arch/Manjaro;
+`python3-gi gir1.2-gtk-3.0` on Debian/Ubuntu).
 
 On Arch/Manjaro the build dependencies are:
 
 ```sh
-sudo pacman -S --needed base-devel cmake clang pkgconf alsa-lib vulkan-headers vulkan-icd-loader shaderc
+sudo pacman -S --needed base-devel cmake clang pkgconf alsa-lib vulkan-headers vulkan-icd-loader shaderc python-gobject gtk3
 cargo build --release
 ```
 
@@ -29,6 +31,7 @@ model: ~/.local/share/whisper/ggml-large-v3-turbo.bin
 languages: [pl, en]
 prompt: ""
 history_dir: null
+feedback_dir: ~/.local/state/ttser/feedback
 threads: 4
 cpu: false
 input_device: null
@@ -43,8 +46,8 @@ Settings resolve as **defaults → YAML → explicit CLI flags**. Unknown YAML k
 produce a warning with the field name and are ignored; their values are not
 retained in history. Invalid values of known fields and malformed YAML remain
 errors. `prompt: ""` disables the initial prompt. Relative
-`model`, `socket` and `history_dir` paths in YAML resolve relative to that file;
-`~/` is expanded.
+`model`, `socket`, `history_dir` and `feedback_dir` paths in YAML resolve relative
+to that file; `~/` is expanded.
 CLI paths resolve relative to the working directory. Model files are supplied by
 the user; ttser does not download them.
 
@@ -112,6 +115,30 @@ standalone `transcribe` commands are not logged.
 To disable future collection, set `history_dir: null` and restart the daemon.
 Existing files remain until you delete them.
 
+## Review and correction feedback
+
+Every nonempty live transcript opens a small floating GTK dialog in i3. Edit the
+text, then press **Enter** (or click **Wklej**) to paste it into the field that
+was focused before the dialog opened. **Shift+Enter** inserts a newline.
+**Escape** or closing the dialog discards the pending paste. Enter is consumed
+by the dialog and does not submit the destination form. If the destination was
+closed, insertion fails instead of pasting elsewhere.
+
+Only an approved text that differs exactly from the original transcript creates
+feedback. Editing and then reverting the change does not count. Whitespace and
+newlines count as changes; approving an empty correction saves feedback without
+pasting. Cancellation or shutdown saves no correction.
+
+Feedback defaults to `$XDG_STATE_HOME/ttser/feedback`, or
+`~/.local/state/ttser/feedback` when XDG_STATE_HOME is unset. Set `feedback_dir`
+to override the location, or `null` to disable it. Each private YAML file contains
+`transcript` (including original cleaned and raw text), `corrected_text`, a
+timestamp and `history_directory` linking the audio when history is enabled.
+Feedback works without audio history and remains useful if a later paste fails.
+The original history transcript is never overwritten by the correction. Feedback
+is local, is not uploaded or used for training automatically, and has no automatic
+retention limit. Write errors are reported on stderr without blocking the paste.
+
 ## Run
 
 ```sh
@@ -132,7 +159,7 @@ Keep `serve` running. It loads the model once, opens the control socket, and log
 The default socket is `$XDG_RUNTIME_DIR/ttser/control.sock`. All commands accept
 `--socket PATH`; a custom socket's parent directory must already exist. `start`
 and `stop` acknowledge the command without waiting for transcription. `status`
-reports `loading`, `idle`, `recording`, `processing`, or the latest error.
+reports `loading`, `idle`, `recording`, `processing`, `reviewing`, or the latest error.
 
 To transcribe a WAV to stdout without microphone or desktop interaction:
 
@@ -143,15 +170,16 @@ To transcribe a WAV to stdout without microphone or desktop interaction:
 ## Behavior
 
 - High/low tones mark recording start/end. A low busy tone rejects a new press
-  while loading or transcribing; key repeat does not start another recording.
+  while loading, transcribing or reviewing; key repeat does not start another
+  recording.
 - Audio stays in memory, is mixed to mono and resampled to 16 kHz. A recording
   exceeding `max_seconds` is discarded with an error tone. `stop` without a
   recording does nothing. Shutdown discards recording/pending output and waits
   for an in-progress inference to finish.
 - The same cleanup as the original script removes line breaks, trims whitespace
   and removes one trailing period. No Enter is sent. Blank output is ignored.
-- X11 insertion writes the text to both CLIPBOARD and PRIMARY and emits
-  Shift+Insert. The destination is whichever field has focus at insertion time.
+- X11 insertion writes the approved text to both CLIPBOARD and PRIMARY and emits
+  Shift+Insert after restoring the field focused before review.
   There is no per-application detection. Physically held modifiers are given up
   to a second to be released instead of being forcibly released.
 - After `paste_delay_ms`, previous clipboard contents are restored if the
@@ -164,5 +192,5 @@ To transcribe a WAV to stdout without microphone or desktop interaction:
   replacement. Restored selections are served while the daemon stays alive;
   persistence after shutdown depends on a clipboard manager.
 - Errors go to stderr, `status`, and an error tone. Transcripts and recordings
-  are retained only when local history is enabled. Failed insertions are not
-  retried automatically because the target may already have received the text.
+  are retained according to the history and feedback settings above. Failed
+  insertions are not retried automatically because the target may already have received the text.
