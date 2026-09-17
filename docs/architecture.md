@@ -28,6 +28,12 @@ Frontends use `Controller::request(Command)` for Start, Stop, Status and Shutdow
 the Linux adapter carries those commands over a Unix socket. Audio uses CPAL's
 existing platform abstraction.
 
+By default, `serve` uses a dedicated X11 connection to own the push-to-talk
+key (keycode 78; configurable with `--hotkey-keycode`, disabled with `--no-hotkey`).
+XKB detectable auto-repeat distinguishes physical releases from repeats;
+one consumer filters repeated presses and submits Start/Stop in event order.
+This avoids reordering commands from independently spawned shortcut clients.
+
 A future macOS/Windows integration can implement `TextOutput` and `TranscriptReview` in its own crate
 and connect its CLI, hotkey handler or UI to the same controller. The current
 desktop adapter supports X11 only; native Wayland, macOS and Windows integration,

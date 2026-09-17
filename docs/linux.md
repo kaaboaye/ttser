@@ -49,9 +49,21 @@ with:
 
 ```i3
 exec --no-startup-id systemctl --user import-environment DISPLAY XAUTHORITY && systemctl --user start ttser.service
-bindsym Scroll_Lock exec --no-startup-id ~/.local/bin/ttser start
-bindsym --release Scroll_Lock exec --no-startup-id ~/.local/bin/ttser stop
 ```
+
+Remove both old Scroll Lock `bindsym` lines. The daemon now handles physical
+press/release events directly and filters auto-repeat before sending commands.
+Separate i3 `exec` processes can arrive out of order: a repeated start arriving
+after stop can latch the trigger and silently reject the next real press.
+The native handler preserves event order. `Hotkey Start/Stop` logs include X11
+event timestamps and the number of repeats filtered during the hold.
+
+The default keycode is 78, Scroll Lock on the usual X11 keymap. Check with
+`xmodmap -pke | grep Scroll_Lock` and adjust `--hotkey-keycode` for another key.
+The daemon reserves that key with any modifiers. An existing binding that owns
+the same key causes an explicit startup error; reload i3 after removing it.
+The `start`/`stop` CLI remains available for programmatic control and tests.
+Use `serve --no-hotkey` to run without reserving a global key.
 
 The i3 session imports its X11 environment before starting the service. Do not
 enable the service at user-manager startup: it needs the logged-in graphical
@@ -70,8 +82,8 @@ systemd-analyze --user verify ~/.config/systemd/user/ttser.service
 i3 -C -c ~/.config/i3/config
 systemctl --user daemon-reload
 systemctl --user import-environment DISPLAY XAUTHORITY
-systemctl --user start ttser.service
 i3-msg reload
+systemctl --user start ttser.service
 ```
 
 Reloading i3 updates the bindings but does not rerun `exec`, which is why the
@@ -101,6 +113,29 @@ configuration or installing a new binary, restart the daemon:
 ```sh
 systemctl --user restart ttser.service
 ```
+
+For an intermittent missed press, inspect precise timestamps around the incident:
+
+```sh
+journalctl --user -u ttser.service -b --since '5 minutes ago' -o short-precise --no-pager
+```
+
+Every start/stop request has a `Control #N` identifier linking reception,
+handling and completion. Handling includes the prior state, whether the trigger
+was held, the selected action, and queue delay. `action=None` with `held: true`
+means a repeated start was ignored; `action=Busy` means loading, transcription or
+review was still in progress. The native hotkey sends one start per hold.
+Check the order of starts and stops, especially after a completed dictation.
+A missing `received` line points to the shortcut/client/socket path; a received
+request without completion points to a blocked controller. Socket and response
+timeouts are logged too. Successful status polling is omitted.
+
+`Microphone opening/started` and `elapsed_ms` identify capture startup delays.
+`Feedback queued` records the cue, unplayed samples replaced by it, the age of
+the last output callback, and the latest output error. An old callback or samples
+left over after a long pause can identify a stalled output stream. Queuing a cue
+does not prove it was audible at the physical device. These diagnostics do not
+include audio, transcript contents, or configuration secrets.
 
 Use `systemctl --user stop ttser.service` to stop dictation. To disable startup
 at future logins too, remove the dictation `exec` line from the i3 configuration.

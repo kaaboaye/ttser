@@ -15,7 +15,7 @@ pub enum Action {
     None,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Trigger {
     held: bool,
 }

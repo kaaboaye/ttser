@@ -28,7 +28,7 @@ def main():
         # JSON is a YAML subset, so this needs no Python YAML dependency.
         config.write_text(json.dumps(settings))
         env = {**os.environ, "PULSE_SOURCE": sink + ".monitor"}
-        daemon = subprocess.Popen([str(args.binary), "--config", str(config), "serve"], env=env, stdout=subprocess.DEVNULL, stderr=(test.root / "daemon.log").open("w"))
+        daemon = subprocess.Popen([str(args.binary), "--config", str(config), "serve", "--no-hotkey"], env=env, stdout=subprocess.DEVNULL, stderr=(test.root / "daemon.log").open("w"))
         test.cleanup.append(lambda: stop_process(daemon))
         def control(action):
             return command(str(args.binary), "--config", str(config), action).decode().strip()

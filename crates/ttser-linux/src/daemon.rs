@@ -1,4 +1,4 @@
-use crate::{desktop::X11TextOutput, ipc};
+use crate::{desktop::X11TextOutput, hotkey::Hotkey, ipc};
 use anyhow::{Context, Result};
 use std::{
     path::PathBuf,
@@ -14,13 +14,26 @@ use ttser_core::{
     runtime::{self, Command, Controller},
 };
 
-pub fn serve(path: PathBuf, config: Config) -> Result<()> {
+pub fn serve(path: PathBuf, config: Config, hotkey_keycode: Option<u8>) -> Result<()> {
     let server = ipc::Server::bind(path.clone())?;
     let output = X11TextOutput::new(Duration::from_millis(config.paste_delay_ms))?;
+    let hotkey = hotkey_keycode.map(Hotkey::new).transpose()?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let signal = shutdown.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))?;
     let (control, commands) = Controller::channel();
+    let keyboard = hotkey.map(|hotkey| {
+        let controller = control.clone();
+        let stopped = shutdown.clone();
+        thread::spawn(move || {
+            let result = hotkey.listen(controller, &stopped);
+            if let Err(error) = &result {
+                eprintln!("Hotkey listener failed: {error:#}");
+                stopped.store(true, Ordering::Relaxed);
+            }
+            result
+        })
+    });
     let stopped = shutdown.clone();
     let transport = thread::spawn(move || {
         while !stopped.load(Ordering::Relaxed) {
@@ -41,9 +54,14 @@ pub fn serve(path: PathBuf, config: Config) -> Result<()> {
                             Some(error) => format!("error {error}"),
                             None => status.state.label().into(),
                         },
-                        Err(error) => format!("error {error:#}"),
+                        Err(error) => {
+                            eprintln!("Control request failed: {error:#}");
+                            format!("error {error:#}")
+                        }
                     };
-                    let _ = ipc::reply(&stream, &response);
+                    if let Err(error) = ipc::reply(&stream, &response) {
+                        eprintln!("Control socket reply failed: {error:#}");
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(10))
@@ -60,8 +78,17 @@ pub fn serve(path: PathBuf, config: Config) -> Result<()> {
     eprintln!("Loading model; control socket: {}", path.display());
     let result = runtime::run(config, output, commands, shutdown.clone());
     shutdown.store(true, Ordering::Relaxed);
+    let keyboard_result = keyboard
+        .map(|keyboard| {
+            keyboard
+                .join()
+                .map_err(|_| anyhow::anyhow!("Hotkey listener panicked"))?
+        })
+        .unwrap_or(Ok(()));
     let _server = transport
         .join()
         .map_err(|_| anyhow::anyhow!("Control transport panicked"))?;
-    result.context("Dictation daemon stopped")
+    result
+        .and(keyboard_result)
+        .context("Dictation daemon stopped")
 }

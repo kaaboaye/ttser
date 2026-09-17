@@ -9,6 +9,7 @@ use std::{
     collections::VecDeque,
     path::Path,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 #[derive(Debug, serde::Serialize)]
@@ -211,7 +212,7 @@ pub fn read_wav(path: &Path) -> Result<Vec<f32>> {
     resample(&mono, spec.sample_rate)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Cue {
     Start,
     Stop,
@@ -221,8 +222,24 @@ pub enum Cue {
 
 pub struct Sounds {
     _stream: Stream,
-    queue: Arc<Mutex<VecDeque<f32>>>,
+    queue: Arc<Mutex<Feedback>>,
     rate: u32,
+}
+
+#[derive(Default)]
+struct Feedback {
+    samples: VecDeque<f32>,
+    last_callback: Option<Instant>,
+    error: Option<String>,
+}
+
+impl Feedback {
+    fn render<T: SizedSample + FromSample<f32>>(&mut self, data: &mut [T], channels: usize) {
+        self.last_callback = Some(Instant::now());
+        for frame in data.chunks_exact_mut(channels) {
+            frame.fill(T::from_sample(self.samples.pop_front().unwrap_or(0.0)));
+        }
+    }
 }
 
 impl Sounds {
@@ -232,7 +249,14 @@ impl Sounds {
             .context("No audio output for feedback")?;
         let supported = device.default_output_config()?;
         let config: StreamConfig = supported.clone().into();
-        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        eprintln!(
+            "Feedback output: device={:?}, rate={}, channels={}, format={:?}",
+            device.name(),
+            config.sample_rate.0,
+            config.channels,
+            supported.sample_format()
+        );
+        let queue = Arc::new(Mutex::new(Feedback::default()));
         let stream = match supported.sample_format() {
             SampleFormat::F32 => output::<f32>(&device, &config, &queue)?,
             SampleFormat::F64 => output::<f64>(&device, &config, &queue)?,
@@ -258,36 +282,44 @@ impl Sounds {
         };
         let count = (self.rate as f32 * 0.09) as usize;
         let mut queue = self.queue.lock().unwrap();
+        let pending = queue.samples.len();
+        let callback_age = queue.last_callback.map(|time| time.elapsed().as_millis());
+        let output_error = queue.error.clone();
         // Key repeat must not accumulate seconds of feedback sounds.
-        queue.clear();
+        queue.samples.clear();
         for i in 0..count {
             let envelope = ((i.min(count - 1 - i) as f32) / (self.rate as f32 * 0.008)).min(1.0);
-            queue.push_back(
+            queue.samples.push_back(
                 0.15 * envelope * (std::f32::consts::TAU * hz * i as f32 / self.rate as f32).sin(),
             );
         }
+        drop(queue);
+        eprintln!(
+            "Feedback queued: cue={cue:?}, samples={count}, replaced_samples={pending}, callback_age_ms={callback_age:?}, output_error={output_error:?}"
+        );
     }
 }
 
 fn output<T>(
     device: &cpal::Device,
     config: &StreamConfig,
-    queue: &Arc<Mutex<VecDeque<f32>>>,
+    queue: &Arc<Mutex<Feedback>>,
 ) -> Result<Stream>
 where
     T: SizedSample + FromSample<f32>,
 {
+    let errors = Arc::clone(queue);
     let queue = Arc::clone(queue);
     let channels = config.channels as usize;
     Ok(device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            let mut queue = queue.lock().unwrap();
-            for frame in data.chunks_exact_mut(channels) {
-                frame.fill(T::from_sample(queue.pop_front().unwrap_or(0.0)));
-            }
+            queue.lock().unwrap().render(data, channels);
         },
-        |error| eprintln!("Audio output error: {error}"),
+        move |error| {
+            errors.lock().unwrap().error = Some(error.to_string());
+            eprintln!("Audio output error: {error}");
+        },
         None,
     )?)
 }
@@ -295,6 +327,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedback_tracks_output_callbacks_and_drains_one_sample_per_frame() {
+        for channels in [1, 2, 6] {
+            let mut feedback = Feedback {
+                samples: [0.25, -0.5].into(),
+                ..Feedback::default()
+            };
+            assert!(feedback.last_callback.is_none());
+            let mut first = vec![0.0_f32; channels];
+            feedback.render(&mut first, channels);
+            assert_eq!(first, vec![0.25; channels]);
+            assert_eq!(feedback.samples.len(), 1);
+            assert!(feedback.last_callback.is_some());
+            let mut rest = vec![1.0_f32; channels * 2];
+            feedback.render(&mut rest, channels);
+            assert_eq!(&rest[..channels], vec![-0.5; channels]);
+            assert_eq!(&rest[channels..], vec![0.0; channels]);
+            assert!(feedback.samples.is_empty());
+        }
+    }
 
     #[test]
     fn volume_normalization_preserves_shape_and_original_samples() {

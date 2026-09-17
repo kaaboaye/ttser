@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
@@ -32,6 +32,8 @@ pub struct Status {
 }
 
 pub struct Request {
+    id: u64,
+    received: Instant,
     command: Command,
     reply: SyncSender<Status>,
 }
@@ -47,12 +49,33 @@ impl Controller {
     }
 
     pub fn request(&self, command: Command) -> Result<Status> {
+        static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+        let received = Instant::now();
+        if !matches!(command, Command::Status) {
+            eprintln!("Control #{id} received: {command:?}");
+        }
         let (tx, rx) = mpsc::sync_channel(1);
-        self.0
-            .try_send(Request { command, reply: tx })
-            .context("Dictation controller is unavailable or busy")?;
-        rx.recv_timeout(Duration::from_secs(2))
-            .context("Dictation controller did not respond")
+        let result = self
+            .0
+            .try_send(Request {
+                id,
+                received,
+                command,
+                reply: tx,
+            })
+            .context("Dictation controller is unavailable or busy")
+            .and_then(|()| {
+                rx.recv_timeout(Duration::from_secs(2))
+                    .context("Dictation controller did not respond")
+            });
+        if let Err(error) = &result {
+            eprintln!(
+                "Control #{id} failed: {command:?}, elapsed_ms={}, error={error:#}",
+                received.elapsed().as_millis()
+            );
+        }
+        result
     }
 }
 
@@ -143,7 +166,7 @@ pub fn run(
                 }
             }
             eprintln!(
-                "Dictation finished in {:.2}s",
+                "Dictation finished in {:.2}s; outcome={outcome}",
                 started.elapsed().as_secs_f32()
             );
             let _ = events.send(WorkerEvent::Finished(result));
@@ -163,9 +186,13 @@ pub fn run(
                     status.state = State::Idle;
                     eprintln!("Ready for dictation");
                 }
-                WorkerEvent::Reviewing => status.state = State::Reviewing,
+                WorkerEvent::Reviewing => {
+                    status.state = State::Reviewing;
+                    eprintln!("Dictation state: reviewing");
+                }
                 WorkerEvent::Finished(result) => {
                     status.state = State::Idle;
+                    eprintln!("Dictation state: idle; trigger={trigger:?}");
                     if let Err(error) = result {
                         set_error(&mut status, &sounds, error);
                     }
@@ -186,28 +213,62 @@ pub fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        let trace = !matches!(request.command, Command::Status);
+        let before = status.state;
+        let trigger_before = format!("{trigger:?}");
+        let action = match request.command {
+            Command::Start => trigger.press(status.state),
+            Command::Stop => trigger.release(status.state),
+            _ => Action::None,
+        };
+        if trace {
+            eprintln!(
+                "Control #{} handling: {:?}, state={}, trigger={}, action={action:?}, queue_ms={}",
+                request.id,
+                request.command,
+                before.label(),
+                trigger_before,
+                request.received.elapsed().as_millis()
+            );
+        }
         match request.command {
-            Command::Start => match trigger.press(status.state) {
-                Action::Record => match Recording::start(input_device.as_deref(), max_seconds) {
-                    Ok(capture) => {
-                        recording = Some(capture);
-                        status = Status {
-                            state: State::Recording,
-                            error: None,
-                        };
-                        sounds.play(Cue::Start);
+            Command::Start => match action {
+                Action::Record => {
+                    let started = Instant::now();
+                    eprintln!(
+                        "Microphone opening: device={}",
+                        input_device.as_deref().unwrap_or("default")
+                    );
+                    match Recording::start(input_device.as_deref(), max_seconds) {
+                        Ok(capture) => {
+                            recording = Some(capture);
+                            status = Status {
+                                state: State::Recording,
+                                error: None,
+                            };
+                            eprintln!(
+                                "Microphone started: elapsed_ms={}",
+                                started.elapsed().as_millis()
+                            );
+                            sounds.play(Cue::Start);
+                        }
+                        Err(error) => set_error(&mut status, &sounds, error),
                     }
-                    Err(error) => set_error(&mut status, &sounds, error),
-                },
+                }
                 Action::Busy => sounds.play(Cue::Busy),
                 _ => {}
             },
             Command::Stop => {
-                if trigger.release(status.state) == Action::Transcribe {
+                if action == Action::Transcribe {
+                    let started = Instant::now();
                     let audio = recording
                         .take()
                         .expect("recording state owns the microphone")
                         .finish();
+                    eprintln!(
+                        "Microphone finished: elapsed_ms={}",
+                        started.elapsed().as_millis()
+                    );
                     sounds.play(Cue::Stop);
                     match audio.and_then(|samples| {
                         jobs.send(samples).context("Transcription worker stopped")
@@ -223,7 +284,24 @@ pub fn run(
             Command::Status => {}
             Command::Shutdown => shutdown.store(true, Ordering::Relaxed),
         }
-        let _ = request.reply.send(status.clone());
+        if trace {
+            eprintln!(
+                "Control #{} completed: {:?}, {} -> {}, elapsed_ms={}, error={:?}",
+                request.id,
+                request.command,
+                before.label(),
+                status.state.label(),
+                request.received.elapsed().as_millis(),
+                status.error
+            );
+        }
+        if request.reply.send(status.clone()).is_err() {
+            eprintln!(
+                "Control #{} response lost: requester disconnected after {}ms",
+                request.id,
+                request.received.elapsed().as_millis()
+            );
+        }
     }
     shutdown.store(true, Ordering::Relaxed);
     drop(recording);

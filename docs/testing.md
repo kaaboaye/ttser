@@ -124,6 +124,18 @@ private persistence, disabled collection, write errors and paste failures.
 
 ## Live X11 integration tests
 
+The shortcut/log regression test uses an isolated X server and two temporary
+PulseAudio sinks (one silent input and one feedback output). It does not use the
+physical microphone, speakers, real history, or the user's desktop. It needs an
+existing local model; it loads it on CPU and transcribes only silence. It checks
+consecutive native Scroll Lock holds with i3 running, auto-repeat filtering, repeated CLI starts,
+unmatched stops, request IDs, microphone timings, and output callback diagnostics:
+
+```sh
+cargo build --locked
+TTSER_ISOLATED_X11=1 xvfb-run -a python3 tests/desktop/control.py --model /path/to/model.bin
+```
+
 These opt-in tests temporarily focus isolated windows and use both selections.
 Run them on an idle Linux/X11 desktop. They save and restore the previous focus,
 mouse position and text selections. The terminal runs a raw Python receiver,

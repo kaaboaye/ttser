@@ -30,6 +30,12 @@ enum Command {
         /// Stop and discard recordings longer than this many seconds.
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=3600))]
         max_seconds: Option<u32>,
+        /// Handle this X11 key directly for ordered push-to-talk (Scroll Lock is usually 78).
+        #[arg(long, default_value_t = 78, value_parser = clap::value_parser!(u8).range(8..))]
+        hotkey_keycode: u8,
+        /// Disable the global hotkey when using programmatic control only.
+        #[arg(long, conflicts_with = "hotkey_keycode")]
+        no_hotkey: bool,
     },
     /// Begin recording. Invoke on push-to-talk key press.
     Start,
@@ -96,6 +102,8 @@ fn main() -> Result<()> {
             model,
             input_device,
             max_seconds,
+            hotkey_keycode,
+            no_hotkey,
         } => {
             model.apply(&mut config);
             if input_device.is_some() {
@@ -109,9 +117,13 @@ fn main() -> Result<()> {
             return daemon::serve(
                 ipc::socket_path(cli.socket.or(config.socket.clone()))?,
                 config,
+                (!no_hotkey).then_some(hotkey_keycode),
             );
             #[cfg(not(target_os = "linux"))]
-            anyhow::bail!("Desktop dictation is currently implemented for Linux/X11 only")
+            {
+                let _ = (hotkey_keycode, no_hotkey);
+                anyhow::bail!("Desktop dictation is currently implemented for Linux/X11 only")
+            }
         }
         Command::Devices => audio::list_devices(),
         Command::Transcribe { file, model } => {
@@ -152,6 +164,29 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serve_defaults_to_scroll_lock_and_allows_override_or_disabling() {
+        for (args, expected) in [
+            (vec!["ttser", "serve"], Some(78)),
+            (vec!["ttser", "serve", "--hotkey-keycode", "96"], Some(96)),
+            (vec!["ttser", "serve", "--no-hotkey"], None),
+        ] {
+            let Command::Serve {
+                hotkey_keycode,
+                no_hotkey,
+                ..
+            } = Cli::try_parse_from(args).unwrap().command
+            else {
+                panic!();
+            };
+            assert_eq!((!no_hotkey).then_some(hotkey_keycode), expected);
+        }
+        assert!(
+            Cli::try_parse_from(["ttser", "serve", "--no-hotkey", "--hotkey-keycode", "78"])
+                .is_err()
+        );
+    }
 
     #[test]
     fn cli_overrides_prompt_without_resetting_other_settings() {

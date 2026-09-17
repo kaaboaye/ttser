@@ -154,6 +154,9 @@ on the same socket.
 ./target/release/ttser serve
 ```
 
+`serve` handles Scroll Lock (X11 keycode 78) by default. Use `--hotkey-keycode`
+to select another key or `--no-hotkey` for programmatic control only.
+
 Keep `serve` running. It loads the model once, opens the control socket, and logs
 `Ready for dictation`. From another process:
 
