@@ -93,7 +93,15 @@ def main():
             return request("POST", route + "/execute/sync", {"script": code, "args": []})
         title = "TTSER browser " + test.root.name
         page = test.root / "page.html"
-        page.write_text(f'<!doctype html><meta charset="utf-8"><title>{title}</title><h1>Isolated paste test</h1><textarea id="edit" rows="12" cols="90"></textarea><div id="rich" contenteditable="true" style="border:1px solid;padding:20px"></div>')
+        page.write_text(f'''<!doctype html><meta charset="utf-8"><title>{title}</title><h1>Isolated paste test</h1><textarea id="edit" rows="12" cols="90"></textarea><div id="rich" contenteditable="true" style="border:1px solid;padding:20px"></div>
+<script>
+document.addEventListener('keydown', event => {{
+    if (event.key === 'Insert' && event.shiftKey && window.pasteBusyMs) {{
+        const end = performance.now() + window.pasteBusyMs;
+        while (performance.now() < end) {{}}
+    }}
+}});
+</script>''')
         request("POST", route + "/url", {"url": page.as_uri()})
         window = find_window(title)
         focus(window)
@@ -111,6 +119,10 @@ def main():
         text = CASES[1]["text"]
         elapsed = inject(test, args.binary, window, text)
         test.check("browser/contenteditable", "BEFORE[" + text + "]AFTER", script("return document.getElementById('rich').textContent"), seconds=elapsed)
+        script("document.getElementById('rich').textContent='';document.getElementById('rich').focus();window.pasteBusyMs=900")
+        elapsed = inject(test, args.binary, window, text)
+        actual = script("return document.getElementById('rich').textContent")
+        test.check("browser/busy-contenteditable", text, actual, seconds=elapsed)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,9 @@ def receiver(path):
         temporary.write_text(json.dumps(events))
         temporary.replace(path)
     def pressed(_, event):
+        if event.keyval == Gdk.KEY_Insert and event.state & Gdk.ModifierType.SHIFT_MASK:
+            if path.with_suffix(".delay").exists():
+                time.sleep(0.9)
         if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             events["enters"] += 1
             save()
@@ -63,8 +66,13 @@ def main():
             destination = find_window("^TTSER review test destination$")
             wait_for(data.exists)
             helper = None
-            for case in ["unchanged", "multiline", "reverted", "button", "keypad", "copy", "copy-cancel", "cancel", "close", "shutdown", "empty", "long", "destination-closed"]:
+            for case in ["unchanged", "delayed-paste", "multiline", "reverted", "button", "keypad", "copy", "copy-cancel", "cancel", "close", "shutdown", "empty", "long", "destination-closed"]:
                 focus(destination)
+                delay = data.with_suffix(".delay")
+                if case == "delayed-paste":
+                    delay.touch()
+                else:
+                    delay.unlink(missing_ok=True)
                 command("xdotool", "key", "ctrl+a", "BackSpace")
                 wait_for(lambda: json.loads(data.read_text())["text"] == "")
                 for name in ("clipboard", "primary"):

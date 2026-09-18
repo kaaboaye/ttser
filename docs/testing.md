@@ -13,6 +13,7 @@ directory or its history entries. Keep private transcripts out of version contro
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+xvfb-run -a cargo test -p ttser-linux x11_paste_waits_for_delivery --locked -- --ignored
 ```
 
 Core tests do not require a model, microphone or display. Desktop integration
@@ -114,6 +115,7 @@ This runs in CI and owns a separate X server and i3 socket. It tests floating
 placement, unchanged approval, Unicode, multiline correction, reverted edits,
 empty approval, Escape, closing the dialog, shutdown, long text, focus restoration
 closed destinations, and clipboard preservation through the production review and insertion backend.
+An editor stalled for 900 ms verifies that restoration waits for text delivery.
 Successive approvals and cancellations reuse one Rust worker thread in a process
 whose PATH has no executables, to verify GTK reuse and independence from Python.
 Approval is exercised through Enter, keypad Enter and the paste button.
@@ -159,7 +161,8 @@ Checks ASCII/symbols, Polish accents, emoji, repeated characters, and a 695-char
 transcript in xfce4-terminal and Chromium. Browser cases insert between existing
 characters; contenteditable is tested too. Terminal cases verify bracketed-paste
 boundaries. Every case checks restoration of both selections. A concurrent-copy
-case verifies that restoration preserves newer clipboard data. Text is inserted
+case verifies that restoration preserves newer clipboard data. A contenteditable
+with a 900 ms key handler reproduces a busy web editor. Text is inserted
 only by the production Rust backend; WebDriver only prepares/reads the field.
 The harness sends the text directly to the Rust helper through a stdin pipe;
 there is no intermediate payload file. The helper stays alive after EOF to

@@ -193,10 +193,10 @@ To transcribe a WAV to stdout without microphone or desktop interaction:
   Shift+Insert after restoring the field focused before review.
   There is no per-application detection. Physically held modifiers are given up
   to a second to be released instead of being forcibly released.
-- After `paste_delay_ms`, previous clipboard contents are restored if the
-  selection still belongs to this operation and still contains its transcript.
-  The delay is a configurable allowance, not an acknowledgement from the target
-  application. Slow destinations may need a larger value.
+- Previous clipboard contents are restored after the text transfer is acknowledged
+  and clipboard requests have settled for `paste_delay_ms`. Delayed readers get
+  up to five seconds plus that settling interval to finish; failure is reported
+  instead of silently claiming success. A newer copy is never restored over.
 - Clipboard snapshots support text, HTML with a text alternative, PNG-compatible
   images and file lists. Proprietary formats and additional representations are
   not preserved. Unreadable/unsupported clipboard content aborts insertion before

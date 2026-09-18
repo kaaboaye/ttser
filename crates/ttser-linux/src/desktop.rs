@@ -186,20 +186,8 @@ impl X11TextOutput {
         }
     }
 
-    fn restore(&mut self, selection: Selection, own_window: u32, text: &str) -> Result<()> {
-        if self.owner(selection.atom)? != own_window {
-            return Ok(());
-        }
-        // The same owner may replace its content without changing its window ID.
-        if self
-            .clipboard
-            .get()
-            .clipboard(selection.kind)
-            .text()
-            .ok()
-            .as_deref()
-            != Some(text)
-        {
+    fn restore(&mut self, selection: Selection) -> Result<()> {
+        if self.owner(selection.atom)? != self.query_window {
             return Ok(());
         }
         let set = self.clipboard.set().clipboard(selection.kind);
@@ -297,17 +285,18 @@ impl TextOutput for X11TextOutput {
                 && self.owner(primary.atom)? == primary.owner,
             "Clipboard changed while preparing dictation"
         );
-        self.clipboard.set().clipboard(clipboard.kind).text(text)?;
-        let clipboard_owner = self.owner(clipboard.atom)?;
-        if let Err(error) = self.clipboard.set().clipboard(primary.kind).text(text) {
-            self.restore(clipboard, clipboard_owner, text)?;
-            return Err(error.into());
-        }
-        let primary_owner = self.owner(primary.atom)?;
-        let paste = self.paste_keys(shift, insert);
-        thread::sleep(self.paste_delay);
-        let restore_clipboard = self.restore(clipboard, clipboard_owner, text);
-        let restore_primary = self.restore(primary, primary_owner, text);
+        let mut transfer = crate::desktop_paste::Paste::new(
+            &self.connection,
+            self.query_window,
+            [clipboard.atom, primary.atom],
+        )?;
+        let paste = transfer
+            .claim()
+            .and_then(|()| self.paste_keys(shift, insert))
+            .and_then(|()| transfer.wait(text, self.paste_delay));
+        drop(transfer);
+        let restore_clipboard = self.restore(clipboard);
+        let restore_primary = self.restore(primary);
         paste.and(restore_clipboard).and(restore_primary)
     }
 }

@@ -22,6 +22,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
+      - run: xvfb-run -a cargo test -p ttser-linux x11_paste_waits_for_delivery --locked -- --ignored
       - run: cargo build -p ttser-linux --example review_text --locked
       - run: TTSER_ISOLATED_X11=1 PATH="/usr/bin:$PATH" xvfb-run -a -s "-screen 0 1280x800x24" python3 tests/desktop/review.py
   portable-core:
