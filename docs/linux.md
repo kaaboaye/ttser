@@ -3,6 +3,8 @@
 The setup below is for Linux/X11 with i3, systemd user services, and PipeWire
 with WirePlumber. See [build prerequisites and configuration](usage.md) first,
 including GTK 4, the local model, and `~/.config/ttser/config.yaml`.
+The X11 server must provide XTEST for paste keystrokes and X-Resource for
+identifying the destination's clipboard requests.
 
 Install the binary from the repository root:
 
@@ -136,6 +138,16 @@ the last output callback, and the latest output error. An old callback or sample
 left over after a long pause can identify a stalled output stream. Queuing a cue
 does not prove it was audible at the physical device. These diagnostics do not
 include audio, transcript contents, or configuration secrets.
+
+`Clipboard delivered` identifies the focused destination and its clipboard
+requestor window. The X-Resource extension identifies their X11 client so
+background readers cannot acknowledge delivery on behalf of the destination.
+`Clipboard timeout` reports whether the destination acknowledged a text transfer
+and how many transfers remain. `Clipboard pending` identifies their X11 windows,
+property and target atoms, and incremental-transfer offsets without logging
+clipboard contents. A background clipboard reader can close its temporary
+window after reading; ttser removes those abandoned transfers so they cannot
+block a completed paste.
 
 Use `systemctl --user stop ttser.service` to stop dictation. To disable startup
 at future logins too, remove the dictation `exec` line from the i3 configuration.

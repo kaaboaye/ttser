@@ -41,6 +41,25 @@ def receiver(path):
     Gtk.main()
 
 
+def clipboard_observer(root):
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk, Gtk
+    clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+    def received(clipboard, text, data):
+        with (root / "observer.reads").open("a") as log:
+            log.write(str(len(text) if text else 0) + "\n")
+    def changed(clipboard, event):
+        if (root / "observer.enabled").exists():
+            # Concurrent GTK reads use a temporary window destroyed after receipt, as in Remmina.
+            clipboard.request_text(received, None)
+            clipboard.request_text(received, None)
+    clipboard.connect("owner-change", changed)
+    (root / "observer.ready").touch()
+    Gtk.main()
+
+
 def main():
     # Refuse a user's desktop; this test intentionally owns the entire X server.
     assert os.environ.get("TTSER_ISOLATED_X11") == "1", "Set TTSER_ISOLATED_X11=1 only under xvfb-run"
@@ -65,11 +84,14 @@ def main():
             spawn([sys.executable, __file__, "--receiver", str(data)], stdout=logs)
             destination = find_window("^TTSER review test destination$")
             wait_for(data.exists)
+            spawn([sys.executable, __file__, "--clipboard-observer", str(root)], stdout=logs)
+            wait_for((root / "observer.ready").exists)
             helper = None
-            for case in ["unchanged", "delayed-paste", "multiline", "reverted", "button", "keypad", "copy", "copy-cancel", "cancel", "close", "shutdown", "empty", "long", "destination-closed"]:
+            for case in ["unchanged", "background-readers", "slow-with-background-readers", "after-background-readers", "delayed-paste", "multiline", "reverted", "button", "keypad", "copy", "copy-cancel", "cancel", "close", "shutdown", "empty", "long", "destination-closed"]:
+                (root / "observer.enabled").unlink(missing_ok=True)
                 focus(destination)
                 delay = data.with_suffix(".delay")
-                if case == "delayed-paste":
+                if case in ("delayed-paste", "slow-with-background-readers"):
                     delay.touch()
                 else:
                     delay.unlink(missing_ok=True)
@@ -77,6 +99,9 @@ def main():
                 wait_for(lambda: json.loads(data.read_text())["text"] == "")
                 for name in ("clipboard", "primary"):
                     set_selection(name, ("original " + name).encode())
+                if case in ("background-readers", "slow-with-background-readers"):
+                    (root / "observer.reads").unlink(missing_ok=True)
+                    (root / "observer.enabled").touch()
                 original = "Zażółć gęślą 🐢" if case != "long" else "Żółw 🐢 " * 12000
                 if helper is None:
                     # The product must work without an interpreter or helper executable on PATH.
@@ -134,6 +159,9 @@ def main():
                     ready.register(helper.stdout, selectors.EVENT_READ)
                     assert ready.select(timeout=15), f"No result in {case}"
                 result = helper.stdout.readline().decode().strip()
+                if case in ("background-readers", "slow-with-background-readers"):
+                    reads = (root / "observer.reads").read_text().splitlines()
+                    assert reads.count(str(len(original))) >= 2, "Both background readers must consume the dictation"
                 if case == "destination-closed":
                     assert helper.wait(timeout=5) != 0, "Closed destination must fail insertion"
                     assert json.loads(data.read_text())["text"] == ""
@@ -163,5 +191,7 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--receiver":
         receiver(Path(sys.argv[2]))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--clipboard-observer":
+        clipboard_observer(Path(sys.argv[2]))
     else:
         main()

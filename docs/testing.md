@@ -13,7 +13,7 @@ directory or its history entries. Keep private transcripts out of version contro
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-xvfb-run -a cargo test -p ttser-linux x11_paste_waits_for_delivery --locked -- --ignored
+xvfb-run -a -s "-noreset" cargo test -p ttser-linux desktop_paste::tests --locked -- --ignored --test-threads=1
 ```
 
 Core tests do not require a model, microphone or display. Desktop integration

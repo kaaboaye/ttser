@@ -22,7 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1"
 serde_yaml_ng = "0.10"
 whisper-rs = "0.16.0"
-x11rb = { version = "0.13", features = ["xtest", "xkb"] }
+x11rb = { version = "0.13", features = ["xtest", "xkb", "res"] }
 
 tempfile = "3"
 

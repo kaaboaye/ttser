@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -8,6 +8,7 @@ use x11rb::{
     connection::Connection,
     protocol::{
         Event,
+        res::{Client, ConnectionExt as _},
         xproto::{
             Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, PropMode,
             Property, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent, SelectionRequestEvent,
@@ -45,6 +46,8 @@ pub(super) struct Paste<'a> {
     chunk_size: usize,
     transfers: Vec<Transfer>,
     requestors: Vec<u32>,
+    destination_window: u32,
+    destination_client: Client,
 }
 
 impl<'a> Paste<'a> {
@@ -52,7 +55,18 @@ impl<'a> Paste<'a> {
         connection: &'a RustConnection,
         window: u32,
         selections: [Atom; 2],
+        destination_window: u32,
     ) -> Result<Self> {
+        // Clipboard requests often use a hidden sibling of the focused window.
+        // XRes identifies its client without trusting optional window properties.
+        let destination_client = connection
+            .res_query_clients()
+            .context("X11 X-Resource extension is required to identify the paste destination")?
+            .reply()?
+            .clients
+            .into_iter()
+            .find(|client| destination_window & !client.resource_mask == client.resource_base)
+            .context("Could not identify the X11 paste destination client")?;
         let atoms = Atoms::new(connection)?.reply()?;
         connection
             .change_window_attributes(
@@ -87,6 +101,8 @@ impl<'a> Paste<'a> {
                 .min(64 * 1024),
             transfers: Vec::new(),
             requestors: Vec::new(),
+            destination_window,
+            destination_client,
         })
     }
 
@@ -179,7 +195,8 @@ impl<'a> Paste<'a> {
             self.connection
                 .change_window_attributes(
                     event.requestor,
-                    &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+                    &ChangeWindowAttributesAux::new()
+                        .event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
                 )?
                 .check()?;
             if !self.requestors.contains(&event.requestor) {
@@ -228,6 +245,13 @@ impl<'a> Paste<'a> {
                     break;
                 };
                 match event {
+                    Event::DestroyNotify(event) => {
+                        // GTK can finish an auxiliary clipboard read by destroying its window.
+                        // Abandon that transfer without treating it as confirmed delivery.
+                        self.transfers
+                            .retain(|transfer| transfer.window != event.window);
+                        self.requestors.retain(|&window| window != event.window);
+                    }
                     Event::SelectionRequest(event)
                         if event.owner == self.window
                             && self.selections.contains(&event.selection) =>
@@ -259,8 +283,18 @@ impl<'a> Paste<'a> {
                                     Some(end)
                                 };
                             } else {
-                                self.transfers.swap_remove(index);
-                                delivered = true;
+                                let transfer = self.transfers.swap_remove(index);
+                                if transfer.window & !self.destination_client.resource_mask
+                                    == self.destination_client.resource_base
+                                {
+                                    if !delivered {
+                                        eprintln!(
+                                            "Clipboard delivered: destination_window={:#x}, requestor_window={:#x}",
+                                            self.destination_window, transfer.window
+                                        );
+                                    }
+                                    delivered = true;
+                                }
                             }
                             last_activity = Instant::now();
                         }
@@ -271,10 +305,22 @@ impl<'a> Paste<'a> {
             if delivered && self.transfers.is_empty() && last_activity.elapsed() >= settle {
                 return Ok(());
             }
-            ensure!(
-                Instant::now() < deadline,
-                "Destination did not finish reading dictated text from the clipboard"
-            );
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "Clipboard timeout: destination_window={:#x}, delivered={delivered}, pending_transfers={}",
+                    self.destination_window,
+                    self.transfers.len()
+                );
+                for transfer in &self.transfers {
+                    eprintln!(
+                        "Clipboard pending: window={:#x}, property={}, target={}, incr_offset={:?}",
+                        transfer.window, transfer.property, transfer.target, transfer.offset
+                    );
+                }
+                anyhow::bail!(
+                    "Destination did not finish reading dictated text from the clipboard"
+                );
+            }
             thread::sleep(Duration::from_millis(2));
         }
     }

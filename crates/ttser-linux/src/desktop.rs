@@ -289,6 +289,7 @@ impl TextOutput for X11TextOutput {
             &self.connection,
             self.query_window,
             [clipboard.atom, primary.atom],
+            self.connection.get_input_focus()?.reply()?.focus,
         )?;
         let paste = transfer
             .claim()
